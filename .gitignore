@@ -1,0 +1,52 @@
+# Dependencies, generated output and local tooling
+node_modules/
+/dist/
+coverage/
+/.tools/
+/tools/
+.pnpm-store/
+*.tsbuildinfo
+
+# Local planning, research and document-edit artifacts
+/implementation_plan.md
+/design_spec.md
+/docs/
+/research/
+/draft_*/
+/CODEX_HANDOFF.md
+/.agents/
+/skills-lock.json
+
+# Secrets and machine-specific agent/authentication state
+.env
+.env.*
+!.env.example
+/.aws/
+/.codex/
+/.ssh/
+/.lark/
+/.lark-cli/
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+tokens.json
+
+# Runtime business data and backups
+/data/
+/backups/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.log
+
+# Local editor and operating-system artifacts
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

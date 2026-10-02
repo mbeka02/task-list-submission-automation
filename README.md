@@ -4,6 +4,8 @@ A TypeScript worker for compiling daily Lark task-list submitters using Nairobi 
 
 Phase 0 and Slices 1–5 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, the real Lark SDK history reader with saved user OAuth renewal, scoped app-bot delivery, safe retries, operator reconciliation and reminder/report due checks. One explicitly approved private-group test confirmed live app-bot sending through the existing CLI. Worker commands keep sending disabled; worker SDK credentials, production destination access and deployment acceptance remain activation gates.
 
+Phase 6 adds a tested local Docker release and consistent SQLite backup/isolated restore. Server deployment and live acceptance are deferred: the server is down and management access is pending. See the [operator runbook](RUNBOOK.md) for build, container tests, preview operation, backup/restore and rollback.
+
 ## Setup
 
 Use nvm with the pinned Node version and pnpm 12.6.0:
@@ -66,7 +68,20 @@ pnpm worker run
 
 Calendar JSON uses `version`, `fromDate`, `throughDate`, `reviewedOn`, `sourceUrls` (HTTPS references) and `publicHolidays` (real `YYYY-MM-DD` dates). Coverage must include activation through today; future review dates, malformed dates and missing provenance block work. Metadata validation cannot prove official annual completeness. Keep the actual maintained dataset under ignored `data/`; no approved annual Kenyan calendar is bundled. Refresh the reviewed configuration and restart when coverage changes.
 
-`WORKER_RESTORE_MODE=true` pauses reads, freezing and outbound attempts while keeping review status visible. Leave it enabled after restoring a backup until recent sends have been reviewed. The reviewed restore-release procedure belongs to Phase 6; this flag cannot detect a restored file automatically. Recent read/preparation failure reasons are visible in the running worker and its JSON output; a separate status process reconstructs durable delivery state rather than that transient read diagnostic.
+`WORKER_RESTORE_MODE=true` pauses reads, freezing and outbound attempts while keeping review status visible. `pnpm storage restore` also creates a persistent review marker beside the restored database; worker checks and direct delivery calls respect it even if the environment flag is false. Manual file replacement cannot be detected automatically. Reviewed release of restored state remains part of future activation. Recent read/preparation failure reasons are visible in the running worker and its JSON output; a separate status process reconstructs durable delivery state rather than that transient read diagnostic.
+
+## Local release and storage recovery
+
+```bash
+pnpm release:build
+pnpm test:release
+pnpm storage backup --output ./backups/new-snapshot.sqlite
+pnpm storage restore --backup ./backups/new-snapshot.sqlite --output ./data/isolated-restore.sqlite
+```
+
+Build/test require local Docker access. Container acceptance uses synthetic records, an external test clock, isolated temporary volumes and disabled networking. Ordinary `pnpm test` skips Docker acceptance; `pnpm test:release` enables it. Optional rollback acceptance uses `RELEASE_PREVIOUS_IMAGE=<built-previous-image>`. The supplied Compose file is offline, uses dedicated ledger/credential volumes, runs as a non-root user and forces sending off; it publishes no ports and is not started by these commands.
+
+Storage commands need existing private destination directories. Backup uses SQLite's online backup API and validates integrity, foreign keys and the exact current migration history without migrating. Complete snapshots are published atomically with private permissions; existing destination files, SQLite sidecars and restore markers are refused. Restore requires a new isolated filename and remains paused for review. No restore-release command, off-server backup schedule or production retention policy is configured by this local release. Database backup does not include rotating OAuth grants or configuration.
 
 ## Delivery status and reconciliation
 

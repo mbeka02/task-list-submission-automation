@@ -15,6 +15,591 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
+test("a temporarily rejected delivery retries its frozen payload after restart and records the acknowledgement", async () => {
+  const path = databasePath();
+  const requests: unknown[] = [];
+  const first = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    newSendUuid: () => sendUuid,
+    transport: async (request) => {
+      requests.push(request);
+      return {
+        status: "retryable",
+        reason: "rate_limited",
+        retryAfterMs: 30_000,
+      };
+    },
+  });
+  const prepared = first.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+  expect(
+    await first.deliverDelivery({ deliveryId: prepared.delivery.id, now }),
+  ).toMatchObject({ status: "retryable" });
+  expect(first.getDelivery(prepared.delivery.id)).toMatchObject({
+    state: "retryable",
+    firstAttemptMs: now,
+    nextAttemptMs: now + 30_000,
+    attemptCount: 1,
+  });
+  first.close();
+  const second = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now + 30_000,
+    transport: async (request) => {
+      requests.push(request);
+      return { messageId: "om_retry_ack" };
+    },
+  });
+  try {
+    expect(
+      await second.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 29_999,
+      }),
+    ).toMatchObject({ status: "not_sent", reason: "retry_not_due" });
+    expect(
+      await second.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 30_000,
+      }),
+    ).toMatchObject({ status: "sent" });
+    expect(requests).toEqual([
+      { ...configRequest, text: "1 October 2026\n1. Anthony", uuid: sendUuid },
+      { ...configRequest, text: "1 October 2026\n1. Anthony", uuid: sendUuid },
+    ]);
+    expect(second.getDelivery(prepared.delivery.id)).toMatchObject({
+      state: "sent",
+      firstAttemptMs: now,
+      attemptCount: 2,
+      messageId: "om_retry_ack",
+    });
+  } finally {
+    second.close();
+  }
+});
+
+test("a definitive destination rejection is visible and never automatically retried", async () => {
+  const requests: unknown[] = [];
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: databasePath(),
+    clock: () => now,
+    transport: async (request) => {
+      requests.push(request);
+      return { status: "failed", reason: "destination_denied" };
+    },
+  });
+  try {
+    const prepared = ledger.prepareDailyReport({
+      businessDate: "2026-10-01",
+      scan,
+      policy,
+    });
+    if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+    expect(
+      await ledger.deliverDelivery({ deliveryId: prepared.delivery.id, now }),
+    ).toMatchObject({ status: "failed" });
+    expect(
+      await ledger.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 60_000,
+      }),
+    ).toMatchObject({ status: "not_sent" });
+    expect(ledger.getDelivery(prepared.delivery.id)).toMatchObject({
+      state: "failed",
+      lastError: "destination_denied",
+      attemptCount: 1,
+      claimToken: null,
+    });
+    expect(requests).toHaveLength(1);
+  } finally {
+    ledger.close();
+  }
+});
+
+test("an app API lost response can be replayed within the conservative UUID window without changing the report", async () => {
+  const path = databasePath();
+  const requests: unknown[] = [];
+  const first = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    newSendUuid: () => sendUuid,
+    transport: Object.assign(
+      async (request: import("../../src/report-ledger.js").OutboundReport) => {
+        requests.push(request);
+        throw new Error("lost response");
+      },
+      { deduplication: "lark_uuid_one_hour" as const },
+    ),
+  });
+  const prepared = first.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+  await first.deliverDelivery({ deliveryId: prepared.delivery.id, now });
+  first.close();
+  const reopened = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now + 30_000,
+    transport: Object.assign(
+      async (request: import("../../src/report-ledger.js").OutboundReport) => {
+        requests.push(request);
+        return { messageId: "om_recovered" };
+      },
+      { deduplication: "lark_uuid_one_hour" as const },
+    ),
+  });
+  try {
+    expect(
+      await reopened.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 29_999,
+      }),
+    ).toMatchObject({ status: "not_sent", reason: "retry_not_due" });
+    expect(
+      await reopened.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 30_000,
+      }),
+    ).toMatchObject({ status: "sent" });
+    expect(requests).toEqual([
+      {
+        ...configRequest,
+        text: "1 October 2026\n1. Anthony",
+        uuid: sendUuid,
+        claimDeadlineMs: now + 45_000,
+      },
+      {
+        ...configRequest,
+        text: "1 October 2026\n1. Anthony",
+        uuid: sendUuid,
+        retryDeadlineMs: now + 3_300_000,
+        claimDeadlineMs: now + 75_000,
+      },
+    ]);
+    expect(reopened.getDelivery(prepared.delivery.id)).toMatchObject({
+      state: "sent",
+      messageId: "om_recovered",
+      attemptCount: 2,
+      firstAttemptMs: now,
+    });
+  } finally {
+    reopened.close();
+  }
+});
+
+test("a rejected replay cannot erase earlier uncertainty or extend its UUID window", async () => {
+  const path = databasePath();
+  const requests: unknown[] = [];
+  let attempt = 0;
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    transport: Object.assign(
+      async (request: import("../../src/report-ledger.js").OutboundReport) => {
+        requests.push(request);
+        attempt++;
+        if (attempt === 1) throw new Error("ack lost");
+        return {
+          status: "retryable" as const,
+          reason: "rate_limited" as const,
+          retryAfterMs: 30_000,
+        };
+      },
+      { deduplication: "lark_uuid_one_hour" as const },
+    ),
+  });
+  try {
+    const prepared = ledger.prepareDailyReport({
+      businessDate: "2026-10-01",
+      scan,
+      policy,
+    });
+    if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+    await ledger.deliverDelivery({ deliveryId: prepared.delivery.id, now });
+    expect(
+      await ledger.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 30_000,
+      }),
+    ).toMatchObject({ status: "uncertain" });
+    expect(ledger.getDelivery(prepared.delivery.id)).toMatchObject({
+      state: "uncertain",
+      lastError: "rate_limited",
+      firstAttemptMs: now,
+      attemptCount: 2,
+    });
+    expect(
+      await ledger.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 3_300_000,
+      }),
+    ).toMatchObject({
+      status: "not_sent",
+      reason: "deduplication_window_expired",
+    });
+    expect(requests).toHaveLength(2);
+  } finally {
+    ledger.close();
+  }
+});
+
+test("a process killed after its request leaves an uncertain delivery when the lease expires", async () => {
+  const path = databasePath();
+  const parent = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+  });
+  const seed = parent.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (seed.status !== "frozen") throw new Error("Expected frozen report");
+  parent.close();
+  const child = ledgerProcess({
+    ...config,
+    databasePath: path,
+    now,
+    action: "deliver",
+    deliveryId: seed.delivery.id,
+  });
+  try {
+    await child.next("ready");
+    child.go();
+    await child.next("request");
+  } finally {
+    await child.close();
+  }
+  const requests: unknown[] = [];
+  const reopened = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now + 60_000,
+    transport: async (request) => {
+      requests.push(request);
+      return { messageId: "unexpected" };
+    },
+  });
+  try {
+    expect(
+      await reopened.deliverDelivery({
+        deliveryId: seed.delivery.id,
+        now: now + 60_000,
+      }),
+    ).toMatchObject({ status: "not_sent", reason: "reconciliation_required" });
+    expect(reopened.getDelivery(seed.delivery.id)).toMatchObject({
+      state: "uncertain",
+      lastError: "claim_expired",
+      attemptCount: 1,
+      firstAttemptMs: now,
+      claimToken: null,
+    });
+    expect(requests).toEqual([]);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("switching adapters cannot grant UUID replay safety to an earlier unverified send", async () => {
+  const path = databasePath();
+  const first = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    transport: async () => {
+      throw new Error("unknown adapter result");
+    },
+  });
+  const prepared = first.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+  await first.deliverDelivery({ deliveryId: prepared.delivery.id, now });
+  first.close();
+  const requests: unknown[] = [];
+  const reopened = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now + 30_000,
+    transport: Object.assign(
+      async (request: import("../../src/report-ledger.js").OutboundReport) => {
+        requests.push(request);
+        return { messageId: "unexpected" };
+      },
+      { deduplication: "lark_uuid_one_hour" as const },
+    ),
+  });
+  try {
+    expect(
+      await reopened.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: now + 30_000,
+      }),
+    ).toMatchObject({ status: "not_sent", reason: "reconciliation_required" });
+    expect(requests).toEqual([]);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("failure to persist an acknowledgement leaves the durable claim for uncertain recovery", async () => {
+  const path = databasePath();
+  const first = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    transport: async () => {
+      first.close();
+      return { messageId: "om_not_persisted" };
+    },
+  });
+  const seed = first.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (seed.status !== "frozen") throw new Error("Expected frozen report");
+  expect(
+    await first.deliverDelivery({ deliveryId: seed.delivery.id, now }),
+  ).toMatchObject({ status: "uncertain" });
+  const requests: unknown[] = [];
+  const reopened = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now + 60_000,
+    transport: async (request) => {
+      requests.push(request);
+      return { messageId: "unexpected" };
+    },
+  });
+  try {
+    expect(reopened.getDelivery(seed.delivery.id)).toMatchObject({
+      state: "sending",
+      messageId: null,
+      attemptCount: 1,
+    });
+    expect(
+      await reopened.deliverDelivery({
+        deliveryId: seed.delivery.id,
+        now: now + 60_000,
+      }),
+    ).toMatchObject({ status: "not_sent", reason: "reconciliation_required" });
+    expect(reopened.getDelivery(seed.delivery.id)).toMatchObject({
+      state: "uncertain",
+      lastError: "claim_expired",
+      messageId: null,
+    });
+    expect(requests).toEqual([]);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("a ledger unable to persist a claim returns a storage failure without networking", async () => {
+  const path = databasePath();
+  const writer = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+  });
+  const seed = writer.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (seed.status !== "frozen") throw new Error("Expected frozen report");
+  writer.close();
+  const requests: unknown[] = [];
+  const reader = openReportLedger({
+    ...config,
+    databasePath: path,
+    readOnly: true,
+    clock: () => now,
+    transport: async (request) => {
+      requests.push(request);
+      return { messageId: "unexpected" };
+    },
+  });
+  try {
+    expect(
+      await reader.deliverDelivery({ deliveryId: seed.delivery.id, now }),
+    ).toMatchObject({ status: "not_sent", reason: "storage_error" });
+    expect(reader.getDelivery(seed.delivery.id)).toMatchObject({
+      state: "pending",
+      attemptCount: 0,
+    });
+    expect(requests).toEqual([]);
+  } finally {
+    reader.close();
+  }
+});
+
+test("retry backoff starts at the completed response and grows on repeated rejections", async () => {
+  let clock = now;
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: databasePath(),
+    clock: () => clock,
+    transport: async () => {
+      clock += 5_000;
+      return {
+        status: "retryable",
+        reason: "rate_limited",
+        retryAfterMs: 30_000,
+      };
+    },
+  });
+  try {
+    const prepared = ledger.prepareDailyReport({
+      businessDate: "2026-10-01",
+      scan,
+      policy,
+    });
+    if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+    await ledger.deliverDelivery({ deliveryId: prepared.delivery.id, now });
+    expect(ledger.getDelivery(prepared.delivery.id)).toMatchObject({
+      nextAttemptMs: now + 35_000,
+    });
+    clock = now + 35_000;
+    await ledger.deliverDelivery({
+      deliveryId: prepared.delivery.id,
+      now: clock,
+    });
+    expect(ledger.getDelivery(prepared.delivery.id)).toMatchObject({
+      nextAttemptMs: now + 100_000,
+      attemptCount: 2,
+      firstAttemptMs: now,
+    });
+  } finally {
+    ledger.close();
+  }
+});
+
+test("competing retry processes claim just one additional attempt", async () => {
+  const path = databasePath();
+  const seedLedger = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    transport: async () => ({
+      status: "retryable",
+      reason: "rate_limited",
+      retryAfterMs: 30_000,
+    }),
+  });
+  const prepared = seedLedger.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+  await seedLedger.deliverDelivery({ deliveryId: prepared.delivery.id, now });
+  seedLedger.close();
+  const fixture = {
+    ...config,
+    databasePath: path,
+    now: now + 30_000,
+    action: "deliver",
+    deliveryId: prepared.delivery.id,
+  };
+  const first = ledgerProcess(fixture);
+  const second = ledgerProcess(fixture);
+  try {
+    await Promise.all([first.next("ready"), second.next("ready")]);
+    first.go();
+    await first.next("request");
+    second.go();
+    expect((await second.next("result")).result).toMatchObject({
+      status: "not_sent",
+    });
+    first.acknowledge();
+    expect((await first.next("result")).result).toMatchObject({
+      status: "sent",
+    });
+    const reopened = openReportLedger({ ...config, databasePath: path });
+    try {
+      expect(reopened.getDelivery(prepared.delivery.id)).toMatchObject({
+        state: "sent",
+        attemptCount: 2,
+        firstAttemptMs: now,
+        messageId: "om_process_ack",
+      });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await Promise.all([first.close(), second.close()]);
+  }
+});
+
+test("retrying one report cannot claim another due report", async () => {
+  let clock = now + 86_400_000;
+  let reject = true;
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: databasePath(),
+    clock: () => clock,
+    transport: async () =>
+      reject
+        ? { status: "retryable", reason: "rate_limited", retryAfterMs: 30_000 }
+        : { messageId: "om_only_first" },
+  });
+  try {
+    const first = ledger.prepareDailyReport({
+      businessDate: "2026-10-01",
+      scan,
+      policy,
+    });
+    const second = ledger.prepareDailyReport({
+      businessDate: "2026-10-02",
+      policy,
+      scan: {
+        ...scan,
+        businessDate: "2026-10-02",
+        observedAtMs: clock,
+        fromMs: 1790888400000,
+        throughMs: 1790924400000,
+        messages: [],
+      },
+    });
+    if (first.status !== "frozen" || second.status !== "frozen")
+      throw new Error("Expected two frozen reports");
+    await ledger.deliverDelivery({ deliveryId: first.delivery.id, now: clock });
+    await ledger.deliverDelivery({
+      deliveryId: second.delivery.id,
+      now: clock,
+    });
+    const untouched = ledger.getDelivery(second.delivery.id);
+    reject = false;
+    clock += 30_000;
+    expect(
+      await ledger.deliverDelivery({
+        deliveryId: first.delivery.id,
+        now: clock,
+      }),
+    ).toMatchObject({ status: "sent" });
+    expect(ledger.getDelivery(second.delivery.id)).toEqual(untouched);
+  } finally {
+    ledger.close();
+  }
+});
+
 test.each([Number.NaN, Number.POSITIVE_INFINITY, 1790837999999])(
   "an invalid or before-cutoff delivery time cannot send: %s",
   async (deliveryTime) => {
@@ -1102,6 +1687,10 @@ const sendUuid = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
 const config = {
   appId: "cli_test",
   sourceChatId: "oc_source",
+  destinationChatId: "oc_destination",
+};
+const configRequest = {
+  appId: "cli_test",
   destinationChatId: "oc_destination",
 };
 const policy = {

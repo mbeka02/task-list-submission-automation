@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, lte, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import {
@@ -42,30 +42,86 @@ export interface OutboundReport {
   destinationChatId: string;
   text: string;
   uuid: string;
+  /** Latest safe start time for an uncertain replay; recheck after obtaining credentials. */
+  retryDeadlineMs?: number;
+  /** Last safe POST start while leaving 15 seconds inside the claim lease. */
+  claimDeadlineMs?: number;
 }
+/** Explicit rejection means this request was not accepted; thrown errors remain uncertain. */
+export type TransportOutcome =
+  | { messageId: string }
+  | {
+      status: "retryable";
+      reason: "rate_limited" | "credentials_unavailable";
+      retryAfterMs: number;
+    }
+  | {
+      status: "uncertain";
+      reason: "deduplication_window_expired" | "claim_expired";
+    }
+  | {
+      status: "failed";
+      reason:
+        | "destination_denied"
+        | "outbound_scope_mismatch"
+        | "credentials_invalid";
+    };
+
+/** Only the app API adapter declares the documented one-hour UUID contract. */
+export type DeliveryTransport = ((
+  request: OutboundReport,
+) => Promise<TransportOutcome>) & {
+  deduplication?: "lark_uuid_one_hour";
+};
+
 export interface LedgerOptions {
   databasePath: string;
+  /** Inspect an existing migrated ledger without migrations or writes. */
+  readOnly?: boolean;
   appId: string;
   sourceChatId: string;
   destinationChatId: string;
-  transport?: (request: OutboundReport) => Promise<{ messageId: string }>;
+  transport?: DeliveryTransport;
   clock?: () => number;
   newSendUuid?: () => string;
 }
 
+/** Reviewed local decision; the attempt number fences stale operator actions. */
+export interface ReconcileDeliveryInput {
+  deliveryId: string;
+  now: number;
+  decision: "sent" | "not-sent";
+  expectedAttempt: number;
+  operator: string;
+  reason: string;
+  messageId?: string;
+}
+
+const CLAIM_LEASE_MS = 60_000;
+const REQUEST_BUDGET_MS = 15_000;
+// Lark documents one hour; reserve five minutes for network delay and clock uncertainty.
+const UNCERTAIN_REPLAY_MS = 55 * 60_000;
+const MIN_RETRY_MS = 30_000;
+
 class EvidenceConflict extends Error {}
 
 export function openReportLedger(options: LedgerOptions) {
-  const sqlite = new Database(options.databasePath);
+  const sqlite = new Database(options.databasePath, {
+    readonly: options.readOnly ?? false,
+    fileMustExist: options.readOnly ?? false,
+  });
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
-  sqlite.pragma("journal_mode = WAL");
+  if (!options.readOnly) sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("synchronous = FULL");
   const db = drizzle(sqlite);
   try {
-    migrate(db, {
-      migrationsFolder: fileURLToPath(new URL("../drizzle/", import.meta.url)),
-    });
+    if (!options.readOnly)
+      migrate(db, {
+        migrationsFolder: fileURLToPath(
+          new URL("../drizzle/", import.meta.url),
+        ),
+      });
   } catch (error) {
     sqlite.close();
     throw error;
@@ -383,8 +439,43 @@ export function openReportLedger(options: LedgerOptions) {
       return { ...blocked(["storage_error"]), deliveryId: id };
     }
   }
+  /** Persist a claim before networking; storage failure before that point cannot send. */
   async function deliverDelivery(input: { deliveryId: string; now: number }) {
-    const delivery = getDelivery(input.deliveryId);
+    try {
+      return await deliverAttempt(input);
+    } catch {
+      return { status: "not_sent" as const, reason: "storage_error" };
+    }
+  }
+
+  async function deliverAttempt(input: { deliveryId: string; now: number }) {
+    let delivery = getDelivery(input.deliveryId);
+    if (
+      delivery &&
+      delivery.state === "sending" &&
+      Number.isSafeInteger(input.now) &&
+      delivery.claimExpiresMs !== null &&
+      input.now >= delivery.claimExpiresMs
+    ) {
+      db.update(deliveries)
+        .set({
+          state: "uncertain",
+          lastError: "claim_expired",
+          nextAttemptMs: input.now + MIN_RETRY_MS,
+          claimToken: null,
+          claimExpiresMs: null,
+        })
+        .where(
+          and(
+            eq(deliveries.id, delivery.id),
+            eq(deliveries.state, "sending"),
+            eq(deliveries.claimToken, delivery.claimToken ?? ""),
+            eq(deliveries.claimExpiresMs, delivery.claimExpiresMs),
+          ),
+        )
+        .run();
+      delivery = getDelivery(input.deliveryId);
+    }
     if (!delivery || !options.transport) return { status: "not_sent" as const };
     if (
       delivery.cutoffMs === null ||
@@ -399,21 +490,54 @@ export function openReportLedger(options: LedgerOptions) {
     if (
       !Number.isSafeInteger(input.now) ||
       input.now < delivery.cutoffMs ||
-      !Number.isSafeInteger(input.now + 60_000)
+      !Number.isSafeInteger(input.now + CLAIM_LEASE_MS)
     )
       return { status: "not_sent" as const, reason: "invalid_delivery_time" };
+    if (
+      delivery.state === "uncertain" &&
+      (options.transport.deduplication !== "lark_uuid_one_hour" ||
+        delivery.adapterKind !== "lark_app_api")
+    )
+      return { status: "not_sent" as const, reason: "reconciliation_required" };
+    if (
+      delivery.state === "uncertain" &&
+      (delivery.firstAttemptMs === null ||
+        input.now >= delivery.firstAttemptMs + UNCERTAIN_REPLAY_MS)
+    )
+      return {
+        status: "not_sent" as const,
+        reason: "deduplication_window_expired",
+      };
+    if (
+      (delivery.state === "retryable" || delivery.state === "uncertain") &&
+      (delivery.nextAttemptMs === null || input.now < delivery.nextAttemptMs)
+    )
+      return { status: "not_sent" as const, reason: "retry_not_due" };
     const claimToken = randomUUID();
     const claimed = db
       .update(deliveries)
       .set({
         state: "sending",
+        adapterKind:
+          options.transport.deduplication === "lark_uuid_one_hour"
+            ? "lark_app_api"
+            : "unverified",
         claimToken,
-        claimExpiresMs: input.now + 60_000,
+        claimExpiresMs: input.now + CLAIM_LEASE_MS,
         attemptCount: sql`${deliveries.attemptCount} + 1`,
         firstAttemptMs: sql`coalesce(${deliveries.firstAttemptMs}, ${input.now})`,
       })
       .where(
-        and(eq(deliveries.id, delivery.id), eq(deliveries.state, "pending")),
+        and(
+          eq(deliveries.id, delivery.id),
+          eq(deliveries.state, delivery.state),
+          eq(deliveries.attemptCount, delivery.attemptCount),
+          or(
+            eq(deliveries.state, "pending"),
+            lte(deliveries.nextAttemptMs, input.now),
+          ),
+          inArray(deliveries.state, ["pending", "retryable", "uncertain"]),
+        ),
       )
       .returning()
       .get();
@@ -424,12 +548,62 @@ export function openReportLedger(options: LedgerOptions) {
         destinationChatId: claimed.destinationChatId,
         text: claimed.text,
         uuid: claimed.sendUuid,
+        ...(options.transport.deduplication === "lark_uuid_one_hour"
+          ? { claimDeadlineMs: input.now + CLAIM_LEASE_MS - REQUEST_BUDGET_MS }
+          : {}),
+        ...(delivery.state === "uncertain" && claimed.firstAttemptMs !== null
+          ? { retryDeadlineMs: claimed.firstAttemptMs + UNCERTAIN_REPLAY_MS }
+          : {}),
       });
-      if (!ack.messageId?.trim()) throw new Error("Missing acknowledgement");
+      if ("status" in ack) {
+        // Rejection of this replay says nothing about whether an earlier request arrived.
+        const completedMs = Math.max(input.now, (options.clock ?? Date.now)());
+        const delayMs = Math.min(
+          900_000,
+          MIN_RETRY_MS * 2 ** Math.min(claimed.attemptCount - 1, 5),
+        );
+        if (
+          ack.status === "retryable" &&
+          (!Number.isSafeInteger(ack.retryAfterMs) ||
+            ack.retryAfterMs < 0 ||
+            !Number.isSafeInteger(
+              completedMs + Math.max(delayMs, ack.retryAfterMs),
+            ))
+        )
+          throw new Error("Invalid retry delay");
+        const state = delivery.state === "uncertain" ? "uncertain" : ack.status;
+        const saved = db
+          .update(deliveries)
+          .set({
+            state,
+            lastError: ack.reason,
+            nextAttemptMs:
+              ack.status === "retryable"
+                ? completedMs + Math.max(delayMs, ack.retryAfterMs)
+                : null,
+            claimToken: null,
+            claimExpiresMs: null,
+          })
+          .where(
+            and(
+              eq(deliveries.id, delivery.id),
+              eq(deliveries.claimToken, claimToken),
+              eq(deliveries.state, "sending"),
+            ),
+          )
+          .returning()
+          .get();
+        return saved ? { status: state } : { status: "uncertain" as const };
+      }
+      if (!("messageId" in ack) || !ack.messageId?.trim())
+        throw new Error("Missing acknowledgement");
+      // The claim token fences completions from a worker superseded by recovery/review.
       const saved = db
         .update(deliveries)
         .set({
           state: "sent",
+          nextAttemptMs: null,
+          lastError: null,
           messageId: ack.messageId,
           acknowledgedMs: (options.clock ?? Date.now)(),
           claimToken: null,
@@ -453,6 +627,7 @@ export function openReportLedger(options: LedgerOptions) {
           .set({
             state: "uncertain",
             lastError: "transport_or_acknowledgement_unknown",
+            nextAttemptMs: input.now + MIN_RETRY_MS,
             claimToken: null,
             claimExpiresMs: null,
           })
@@ -471,10 +646,87 @@ export function openReportLedger(options: LedgerOptions) {
     }
   }
 
+  /** Record a reviewed decision atomically; this operation never invokes a transport. */
+  function reconcileDelivery(input: ReconcileDeliveryInput) {
+    if (
+      (input.decision !== "sent" && input.decision !== "not-sent") ||
+      (input.decision === "sent"
+        ? !/^om_[A-Za-z0-9_-]+$/.test(input.messageId ?? "")
+        : input.messageId !== undefined) ||
+      !input.operator.trim() ||
+      input.operator.length > 200 ||
+      !input.reason.trim() ||
+      input.reason.length > 2000 ||
+      !Number.isSafeInteger(input.expectedAttempt) ||
+      input.expectedAttempt < 1 ||
+      !Number.isSafeInteger(input.now) ||
+      input.now < 0
+    )
+      return { status: "blocked" as const, reason: "invalid_reconciliation" };
+    try {
+      return db.transaction(
+        (tx) => {
+          const delivery = getDelivery(input.deliveryId);
+          if (
+            !delivery ||
+            !(
+              delivery.state === "uncertain" ||
+              delivery.state === "failed" ||
+              (delivery.state === "sending" &&
+                delivery.claimExpiresMs !== null &&
+                input.now >= delivery.claimExpiresMs)
+            ) ||
+            delivery.attemptCount !== input.expectedAttempt ||
+            (delivery.firstAttemptMs !== null &&
+              input.now < delivery.firstAttemptMs)
+          )
+            return {
+              status: "blocked" as const,
+              reason: "stale_reconciliation",
+            };
+          tx.update(deliveries)
+            .set({
+              state: input.decision === "sent" ? "sent" : "retryable",
+              messageId: input.messageId ?? null,
+              acknowledgedMs: input.decision === "sent" ? input.now : null,
+              claimToken: null,
+              claimExpiresMs: null,
+              nextAttemptMs: input.decision === "not-sent" ? input.now : null,
+              lastError: null,
+              reconciliations: [
+                ...delivery.reconciliations,
+                {
+                  atMs: input.now,
+                  decision: input.decision,
+                  expectedAttempt: input.expectedAttempt,
+                  operator: input.operator.trim(),
+                  reason: input.reason.trim(),
+                  messageId: input.messageId ?? null,
+                },
+              ],
+            })
+            .where(
+              and(
+                eq(deliveries.id, delivery.id),
+                eq(deliveries.state, delivery.state),
+                eq(deliveries.attemptCount, input.expectedAttempt),
+              ),
+            )
+            .run();
+          return { status: "reconciled" as const };
+        },
+        { behavior: "immediate" },
+      );
+    } catch {
+      return { status: "blocked" as const, reason: "storage_error" };
+    }
+  }
+
   return {
     prepareDailyReport,
     getDelivery,
     deliverDelivery,
+    reconcileDelivery,
     close: () => sqlite.close(),
   };
 }

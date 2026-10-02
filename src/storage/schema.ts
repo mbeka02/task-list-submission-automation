@@ -52,6 +52,16 @@ export const observations = sqliteTable(
   ],
 );
 
+/** Human-reviewed evidence that resolved an uncertain or failed delivery. */
+export interface DeliveryReconciliation {
+  atMs: number;
+  decision: "sent" | "not-sent";
+  expectedAttempt: number;
+  operator: string;
+  reason: string;
+  messageId: string | null;
+}
+
 export const deliveries = sqliteTable(
   "daily_delivery",
   {
@@ -66,7 +76,7 @@ export const deliveries = sqliteTable(
     text: text().notNull(),
     sendUuid: text().notNull(),
     state: text({
-      enum: ["pending", "sending", "sent", "uncertain"],
+      enum: ["pending", "sending", "sent", "uncertain", "retryable", "failed"],
     }).notNull(),
     messageId: text(),
     timeZone: text().notNull().default("Africa/Nairobi"),
@@ -74,10 +84,16 @@ export const deliveries = sqliteTable(
     textHash: text(),
     attemptCount: integer().notNull().default(0),
     firstAttemptMs: integer(),
+    nextAttemptMs: integer(),
+    adapterKind: text({ enum: ["lark_app_api", "unverified"] }),
     claimToken: text(),
     claimExpiresMs: integer(),
     acknowledgedMs: integer(),
     lastError: text(),
+    reconciliations: text({ mode: "json" })
+      .$type<DeliveryReconciliation[]>()
+      .notNull()
+      .default([]),
   },
   (table) => [
     uniqueIndex("delivery_business_key").on(

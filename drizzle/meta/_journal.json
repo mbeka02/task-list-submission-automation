@@ -22,6 +22,27 @@
       "when": 1790866875425,
       "tag": "0002_overconfident_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790940329435,
+      "tag": "0003_legal_justice",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790941381240,
+      "tag": "0004_hesitant_sauron",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790941647786,
+      "tag": "0005_slim_tomas",
+      "breakpoints": true
     }
   ]
 }

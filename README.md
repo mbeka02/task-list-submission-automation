@@ -2,7 +2,7 @@
 
 A TypeScript worker for compiling daily Lark task-list submitters using Nairobi time. The planned workflow includes a 09:30 reminder and a report after the inclusive 10:00 cutoff, Monday–Friday excluding Kenyan public holidays.
 
-Phase 0 and Slice 1 are implemented: offline preflight and deterministic submission evaluation. Lark history reading, report persistence, sending and scheduling are still pending.
+Phase 0, Slice 1 and the local Slice 2 path are implemented: offline preflight, deterministic submission evaluation, durable report/evidence storage and delivery through a supplied controlled transport. The production Lark history/sending adapters, full retry/reconciliation workflow and scheduling are still pending.
 
 ## Setup
 
@@ -24,6 +24,12 @@ The project pins Node 24.21.0. `better-sqlite3` may need Python, make and a C/C+
 
 `evaluateSubmissions({ businessDate, policy, messages })` in `src/evaluate-submissions.ts` evaluates current canonical observations. It recognizes supported text/rich-text task lists, applies the Nairobi date/cutoff and supplied holiday calendar, resolves platform names, deduplicates scoped sender identities and explains exclusion/review decisions. Unconfirmed task replies require review. A `ready` result establishes detector readiness; complete retrieval and approved publication policy remain separate requirements.
 
+`openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes `prepareDailyReport({ businessDate, scan, policy })`, `getDelivery(deliveryId)`, `deliverDelivery({ deliveryId, now })` and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
+
+Preparation requires a complete appropriately bounded scan and explicit reply policy. It preserves candidate observations and freezes distinct names, exact text, source evidence, policy version and a stable UUID in one transaction. Repeated preparation keeps the frozen report. Incomplete/ambiguous/conflicting evidence blocks freezing; a genuinely successful empty scan produces explicit zero-submission text. Ordinary unrelated posts are not retained as new business records.
+
+Delivery atomically claims a pending report, commits the claim, sends its persisted text/UUID outside the transaction and records the acknowledgement. Other claimants and acknowledged reports do not send. Ambiguous responses become uncertain with no automatic resend; expired in-flight claims remain blocked for the later recovery workflow. The current claim lease is 60 seconds. These local behaviors do not establish Lark's delivery eligibility, deduplication guarantees or production readiness.
+
 ## Verification
 
 ```bash
@@ -40,11 +46,15 @@ To target a submission behavior:
 pnpm exec vitest run tests/unit/evaluate-submissions.test.ts -t 'test name'
 ```
 
-`pnpm test:contract` runs the preflight CLI contract tests. Automated tests use synthetic inputs without live Lark credentials or messages. `pnpm test:integration` is reserved for the next SQLite report slice and currently has no test files.
+`pnpm test:contract` runs the preflight CLI contract tests. `pnpm test:integration` runs the file-backed SQLite report tests, including independent-process races. Automated tests use synthetic inputs and controlled transports without live Lark credentials or messages.
 
 ## Database and delivery
 
-The stack uses the official Lark SDK, Drizzle ORM/Kit and local SQLite through `better-sqlite3`. Migration commands are configured, but the business schema/migrations arrive in the next slice; do not run them yet. Production credentials, group access, holiday data, hosting and operational policies still require validation before activation.
+The stack uses the official Lark SDK, Drizzle ORM/Kit and local SQLite through `better-sqlite3`. Versioned SQL and Drizzle snapshots under `drizzle/` are tracked. The four business tables cover messages, observations, deliveries and report entries; Drizzle also keeps its migration journal. Connections enable foreign keys, WAL, full synchronous durability and a five-second busy timeout. Preparation uses an immediate write transaction. SQLite files belong on dedicated local storage rather than a shared network volume.
+
+The integration suite verifies new-database creation, reopening and an upgrade from the earlier migration while preserving its text/UUID. Older records lacking audit fields remain readable but cannot send automatically. Production credentials, group access, holiday data, retention, backups and hosting still require validation before activation. No retention or pruning policy is activated in this slice.
+
+Generate changes with `pnpm db:generate`, review and commit the generated SQL/snapshot, then apply reviewed migrations to isolated local storage. For the manual migration command, create the database directory first and set `SQLITE_FILE_PATH` for the intended file. The ledger constructor also applies the packaged migrations on opening. Review and migration rollout must precede any authorized production launch; do not use schema push against production.
 
 ## Git workflow
 

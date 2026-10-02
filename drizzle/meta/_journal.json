@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790865770669,
+      "tag": "0000_ordinary_maestro",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790866214238,
+      "tag": "0001_polite_captain_cross",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790866875425,
+      "tag": "0002_overconfident_avengers",
+      "breakpoints": true
+    }
+  ]
+}

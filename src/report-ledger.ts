@@ -241,6 +241,7 @@ export function openReportLedger(options: LedgerOptions) {
             if (
               prior &&
               message.updatedMs === prior.updatedMs &&
+              !message.deleted &&
               !tx
                 .select()
                 .from(observations)
@@ -284,7 +285,7 @@ export function openReportLedger(options: LedgerOptions) {
                 fingerprint,
                 payload: {
                   ...message,
-                  observedAtMs: input.scan.observedAtMs,
+                  observedAtMs: message.observedAtMs ?? input.scan.observedAtMs,
                   normalizedText: decision.normalizedText,
                   reason: decision.reason,
                   detectorVersion: "task-list-v1",

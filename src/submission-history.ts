@@ -14,7 +14,10 @@ import {
   fileUserAccessToken,
 } from "./user-oauth-credentials.js";
 
-// Completion covers accessible history; it does not imply an atomic Lark snapshot.
+/**
+ * Coverage and observations from a history traversal, or a failure with its prefix.
+ * Complete means accessible interval/root coverage, not an atomic Lark snapshot.
+ */
 export type HistoryScan =
   | CompleteScan
   | (Omit<CompleteScan, "status"> & {
@@ -23,11 +26,13 @@ export type HistoryScan =
       providerCode?: number;
     });
 
+/** User OAuth token bound to the reader's app; expiresAtMs is absolute epoch milliseconds. */
 export interface UserAccessGrant {
   appId: string;
   accessToken: string;
   expiresAtMs: number;
 }
+/** Fixed app/source scope and read bounds; an injected clock returns epoch milliseconds. */
 interface ReaderConfig {
   appId: string;
   appSecret: string;
@@ -37,6 +42,10 @@ interface ReaderConfig {
   maxPages?: number;
   credentialTimeoutMs?: number;
 }
+/**
+ * Reader setup with exactly one credential strategy: a trusted token supplier,
+ * or a private credential file bound to the approved reader's app-scoped open ID.
+ */
 export type HistoryReaderOptions = ReaderConfig &
   (
     | {
@@ -50,26 +59,34 @@ export type HistoryReaderOptions = ReaderConfig &
         getUserAccessToken?: never;
       }
   );
+/** Request one YYYY-MM-DD Nairobi date from the configured source; v1 excludes replies. */
 export interface HistoryReadInput {
   businessDate: string;
   sourceChatId: string;
   replyPolicy: "include" | "exclude";
 }
 
+/** Guard object-shaped response values before reading their fields. */
 function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** Decode Lark's decimal-string epoch milliseconds; invalid or unsafe values return null. */
 function timestamp(value: unknown): number | null {
   if (typeof value !== "string" || !/^\d+$/.test(value)) return null;
   const result = Number(value);
   return Number.isSafeInteger(result) && result >= 0 ? result : null;
 }
 
+/** Allow missing/null optional fields while rejecting non-string values when present. */
 function optionalString(value: unknown): boolean {
   return value === undefined || value === null || typeof value === "string";
 }
 
+/**
+ * Configure a Lark SDK reader bound to one app and source group.
+ * The returned operation obtains user credentials and reads history on demand.
+ */
 export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
   const http = defaultHttpInstance.create({
     timeout: 15_000,
@@ -77,6 +94,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     maxContentLength: 10 * 1024 * 1024,
   });
   http.interceptors.response.use((response) => response.data);
+  /** Discard SDK logs that could contain credential headers or request bodies. */
   const silent = () => {};
   const client = new Client({
     appId: options.appId,
@@ -86,7 +104,6 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     // SDK transport returns unwrapped data; Axios types describe an envelope.
     httpInstance: (options.httpInstance ?? http) as HttpInstance,
     loggerLevel: LoggerLevel.error,
-    // SDK transport errors can contain credential headers and request bodies.
     logger: {
       error: silent,
       warn: silent,
@@ -105,6 +122,12 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
       clock: options.clock ?? Date.now,
     });
 
+  /**
+   * After cutoff, read main-post history covering Nairobi midnight through 10:00.
+   * Query bounds are padded; the evaluator applies the exact millisecond cutoff.
+   * Merge overlaps to the latest observed version and block conflicting source evidence.
+   * Provider/credential failures return sanitized incomplete/unavailable outcomes.
+   */
   async function readSubmissionHistory(
     input: HistoryReadInput,
   ): Promise<HistoryScan> {
@@ -122,7 +145,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
       fromMs,
       throughMs,
     };
-    // Preserve partial observations without presenting a failure as an empty success.
+    /** Preserve coverage and partial observations without signalling an empty success. */
     function failed(
       reason: string,
       status: "incomplete" | "unavailable" = "incomplete",

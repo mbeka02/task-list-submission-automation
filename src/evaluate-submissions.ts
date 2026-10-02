@@ -1,3 +1,7 @@
+/**
+ * One observed version of a Lark message, with raw content and sender metadata.
+ * Send, update and observation times are epoch milliseconds.
+ */
 export interface SubmissionObservation {
   observationId: string;
   messageId: string;
@@ -13,6 +17,7 @@ export interface SubmissionObservation {
   createdMs: number;
   updatedMs: number;
   messageType: string;
+  /** Original Lark JSON body; classification produces separate normalized text. */
   content: string;
   deleted: boolean;
   observedAtMs?: number;
@@ -21,6 +26,10 @@ export interface SubmissionObservation {
   provenance?: "original" | "forwarded" | "management_recap";
 }
 
+/**
+ * Current message observations and rules for one YYYY-MM-DD Nairobi business date.
+ * The caller supplies the holiday calendar and any verified name aliases.
+ */
 export interface SubmissionInput {
   businessDate: string;
   policy: {
@@ -40,15 +49,18 @@ export interface SubmissionInput {
   messages: readonly SubmissionObservation[];
 }
 
+/** One distinct submitter, with a display name and the message supporting selection. */
 export interface SubmissionEntry {
   senderIdentity: { appId: string; tenantKey: string; openId: string };
   displayName: string;
   evidence: { observationId: string; messageId: string };
 }
 
+/** Classification of one input observation, including its exclusion or review reason. */
 export interface SubmissionDecision {
   observationId: string;
   messageId: string;
+  /** Classification text, or null when decoding was skipped or failed. */
   normalizedText: string | null;
   outcome: "eligible" | "excluded" | "review";
   reason:
@@ -73,12 +85,20 @@ export interface SubmissionDecision {
     | "duplicate_sender";
 }
 
+/**
+ * Selected submitters and decisions for every input observation.
+ * `ready` means classification is resolved; the ledger checks retrieval completeness.
+ */
 export interface SubmissionEvaluation {
   status: "ready" | "needs_review" | "not_working_day";
   entries: SubmissionEntry[];
   decisions: SubmissionDecision[];
 }
 
+/**
+ * Prefer the localized platform name, then the general name, then a verified alias.
+ * An empty or missing result requires name review for a qualifying task list.
+ */
 function resolveName(
   message: SubmissionObservation,
   policy: SubmissionInput["policy"],
@@ -100,6 +120,10 @@ function resolveName(
   );
 }
 
+/**
+ * Extract text from Lark text/post JSON, preserving title and row line breaks.
+ * Return null when content or its selected translation cannot be decoded safely.
+ */
 function plainText(
   content: string,
   type: string,
@@ -160,6 +184,11 @@ function plainText(
   }
 }
 
+/**
+ * Classify current observations and select the earliest eligible post per sender.
+ * Expect one current observation per source message; inputs are not mutated.
+ * @throws When businessDate is not a real YYYY-MM-DD date.
+ */
 export function evaluateSubmissions(
   input: SubmissionInput,
 ): SubmissionEvaluation {

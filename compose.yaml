@@ -1,0 +1,46 @@
+# Local/preview release only. Production access and activation require separate approval.
+services:
+  worker:
+    build: .
+    image: task-list-local:phase-6
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    # Offline by default: no Lark reads/sends or inbound ports during local release testing.
+    network_mode: none
+    stop_grace_period: 45s
+    pids_limit: 64
+    mem_limit: 256m
+    env_file:
+      - path: ${WORKER_ENV_FILE:-.env}
+        required: true
+        format: raw
+    environment:
+      APP_MODE: preview
+      ENABLE_OUTBOUND: "false"
+      BUSINESS_TIMEZONE: Africa/Nairobi
+      SQLITE_FILE_PATH: /data/task-list.sqlite
+      LARK_USER_CREDENTIAL_FILE: /credentials/user-oauth.json
+      HOLIDAY_CALENDAR_PATH: /data/kenyan-holidays.json
+    volumes:
+      - ledger:/data
+      - credentials:/credentials
+      - type: bind
+        source: ${WORKER_BACKUP_DIRECTORY:-./backups}
+        target: /backups
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ledger:
+  credentials:

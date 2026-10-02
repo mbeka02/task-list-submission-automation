@@ -1,0 +1,13 @@
+# Allow only build inputs. Secrets, staff data, Git, drafts and local tooling stay out of all layers.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!tsconfig.json
+!tsconfig.build.json
+!src/
+!src/**
+!drizzle/
+!drizzle/**

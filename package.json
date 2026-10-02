@@ -21,7 +21,10 @@
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "drizzle-kit migrate --config drizzle.config.ts",
     "delivery": "node --env-file-if-exists=.env --import tsx src/delivery-command.ts",
-    "worker": "node --env-file-if-exists=.env --import tsx src/worker-command.ts"
+    "worker": "node --env-file-if-exists=.env --import tsx src/worker-command.ts",
+    "storage": "node --env-file-if-exists=.env --import tsx src/storage-command.ts",
+    "release:build": "docker build --tag task-list-local:phase-6 .",
+    "test:release": "RUN_DOCKER_ACCEPTANCE=true vitest run tests/acceptance"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "1.74.0",

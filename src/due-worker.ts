@@ -3,6 +3,7 @@ import {
   openReportLedger,
   type ReportPolicy,
 } from "./report-ledger.js";
+import { requiresRestoreReview } from "./storage-recovery.js";
 import {
   createSubmissionHistoryReader,
   type HistoryReaderOptions,
@@ -249,7 +250,7 @@ export function createDueWorker(options: DueWorkerOptions) {
         reminder: { state: "blocked" as const, reason: "invalid_calendar" },
         report: { state: "blocked" as const, reason: "invalid_calendar" },
       };
-    if (options.restoreMode)
+    if (options.restoreMode || requiresRestoreReview(options.databasePath))
       return {
         status: "paused" as const,
         reason: "restore_review_required",

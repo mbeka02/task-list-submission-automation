@@ -86,6 +86,8 @@ function openWorker(inspect: boolean) {
 
 /** Run startup/periodic checks serially; shutdown waits for the active check before closing SQLite. */
 async function main() {
+  // New SQLite/WAL files must stay private even when the host's default mask is permissive.
+  process.umask(0o077);
   const mode = process.env.APP_MODE ?? "preview";
   if (!["preview", "test", "production"].includes(mode))
     throw new Error("invalid_worker_configuration");

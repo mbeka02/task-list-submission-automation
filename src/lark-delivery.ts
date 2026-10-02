@@ -17,7 +17,7 @@ export interface LarkDeliveryOptions {
   clock?: () => number;
 }
 
-/** Extract a provider rejection only from HTTP statuses that cannot imply acceptance. */
+/** Extract a candidate error body from supported client errors; HTTP status alone cannot establish rejection. */
 function httpRejection(error: unknown): unknown {
   if (typeof error !== "object" || error === null || !("response" in error))
     return null;
@@ -34,7 +34,7 @@ function httpRejection(error: unknown): unknown {
   return response.data;
 }
 
-/** Only documented rejection codes establish that this request was rejected. */
+/** Map documented rejection codes; other responses still require acknowledgement validation. */
 function rejection(value: unknown): TransportOutcome | null {
   if (
     typeof value !== "object" ||
@@ -58,7 +58,10 @@ function rejection(value: unknown): TransportOutcome | null {
   return null;
 }
 
-/** App-bot adapter for S4; no live command or background sender is installed. */
+/**
+ * Create an app-bot transport with a bounded HTTP timeout and fixed destination allowlist.
+ * Each call makes at most one message POST; the ledger owns retries and durable outcomes.
+ */
 export function createLarkDeliveryTransport(
   options: LarkDeliveryOptions,
 ): DeliveryTransport {
@@ -68,13 +71,14 @@ export function createLarkDeliveryTransport(
     maxContentLength: 1024 * 1024,
   });
   http.interceptors.response.use((response) => response.data);
-  // SDK diagnostics may include credentials or request content. Return sanitized outcomes instead.
+  /** Discard SDK logs that could contain credentials or request content. */
   const silent = () => {};
   const client = new Client({
     appId: options.appId,
     appSecret: options.appSecret,
     domain: Domain.Lark,
     disableTokenCache: true,
+    // SDK transport returns unwrapped data; Axios types describe an envelope.
     httpInstance: (options.httpInstance ?? http) as HttpInstance,
     loggerLevel: LoggerLevel.error,
     logger: {
@@ -85,6 +89,7 @@ export function createLarkDeliveryTransport(
       trace: silent,
     },
   });
+  /** Send the frozen text and UUID as the approved app bot, without a user-identity fallback. */
   const send: DeliveryTransport = async (request) => {
     if (
       request.appId !== options.appId ||
@@ -94,6 +99,7 @@ export function createLarkDeliveryTransport(
     // Separate credential retrieval so its failure establishes that no message POST ran.
     let accessToken: string;
     try {
+      // This endpoint returns its token at the top level; validate the actual response shape.
       const token: unknown = await client.auth.tenantAccessToken.internal({
         data: { app_id: options.appId, app_secret: options.appSecret },
       });
@@ -124,6 +130,7 @@ export function createLarkDeliveryTransport(
         retryAfterMs: 30_000,
       };
     }
+    // Credential retrieval consumes time, so recheck both deadlines immediately before the POST.
     if (
       request.retryDeadlineMs !== undefined &&
       (options.clock ?? Date.now)() >= request.retryDeadlineMs
@@ -149,6 +156,7 @@ export function createLarkDeliveryTransport(
       );
       const rejected = rejection(response);
       if (rejected) return rejected;
+      // Success requires an acknowledgement for the intended group, not merely a successful HTTP call.
       if (
         response.code !== 0 ||
         !response.data?.message_id ||
@@ -159,9 +167,11 @@ export function createLarkDeliveryTransport(
     } catch (error) {
       const rejected = rejection(httpRejection(error));
       if (rejected) return rejected;
+      // Timeouts and unrecognized errors cannot establish whether Lark accepted the message.
       throw new Error("Send outcome unknown");
     }
   };
+  // Declare this adapter's UUID contract; the ledger still enforces a shorter replay window.
   send.deduplication = "lark_uuid_one_hour";
   return send;
 }

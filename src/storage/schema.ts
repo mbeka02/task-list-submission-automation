@@ -10,12 +10,14 @@ import type {
   SubmissionObservation,
 } from "../evaluate-submissions.js";
 
+/** Observed source content and detector provenance; this is evidence, not a full Lark revision history. */
 export type EvidenceObservation = SubmissionObservation & {
   observedAtMs: number;
   normalizedText: string | null;
   reason: string;
   detectorVersion: string;
 };
+/** Stable app-scoped source message identity and its latest known lifecycle state. */
 export const messages = sqliteTable(
   "message",
   {
@@ -34,6 +36,7 @@ export const messages = sqliteTable(
     uniqueIndex("message_app_source_id").on(table.appId, table.sourceMessageId),
   ],
 );
+/** Immutable observed versions linked to a message; fingerprints prevent duplicate evidence. */
 export const observations = sqliteTable(
   "message_observation",
   {
@@ -52,7 +55,7 @@ export const observations = sqliteTable(
   ],
 );
 
-/** Human-reviewed evidence that resolved an uncertain or failed delivery. */
+/** Operator evidence appended atomically with a reviewed delivery decision. */
 export interface DeliveryReconciliation {
   atMs: number;
   decision: "sent" | "not-sent";
@@ -62,6 +65,7 @@ export interface DeliveryReconciliation {
   messageId: string | null;
 }
 
+/** One frozen report plus durable claims, retry eligibility, acknowledgement and recovery history. */
 export const deliveries = sqliteTable(
   "daily_delivery",
   {
@@ -83,9 +87,12 @@ export const deliveries = sqliteTable(
     cutoffMs: integer(),
     textHash: text(),
     attemptCount: integer().notNull().default(0),
+    // Earliest attempt anchors the UUID replay window; retries and reviews never reset it.
     firstAttemptMs: integer(),
     nextAttemptMs: integer(),
+    // Remember the sending adapter so a new adapter cannot grant old attempts UUID protection.
     adapterKind: text({ enum: ["lark_app_api", "unverified"] }),
+    // The token fences stale workers; expiry means the outcome needs recovery, not that sending failed.
     claimToken: text(),
     claimExpiresMs: integer(),
     acknowledgedMs: integer(),
@@ -108,6 +115,7 @@ export const deliveries = sqliteTable(
   ],
 );
 
+/** Ordered sender/name snapshots and exact evidence used by a delivery, preserved through later edits. */
 export const reportEntries = sqliteTable(
   "report_entry",
   {

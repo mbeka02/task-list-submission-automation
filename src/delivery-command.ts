@@ -1,10 +1,14 @@
 import { lstatSync } from "node:fs";
 import { openReportLedger } from "./report-ledger.js";
 
-/** Local operator entrypoint: no SDK transport is constructed here. */
+/**
+ * Inspect delivery state or record a reviewed outcome in the configured ledger.
+ * This command constructs no transport: even a not-sent decision cannot send a message.
+ */
 function run() {
   const [action, ...args] = process.argv.slice(2);
   const values = new Map<string, string>();
+  // Accept explicit flag/value pairs; duplicates or missing values would make a review ambiguous.
   for (let index = 0; index < args.length; index += 2) {
     const name = args[index];
     const value = args[index + 1];
@@ -29,6 +33,7 @@ function run() {
     )
   )
     throw new Error("invalid_arguments");
+  // Bind recovery to the configured app and groups; a delivery ID alone grants no access.
   const databasePath = process.env.SQLITE_FILE_PATH;
   const appId = process.env.LARK_APP_ID;
   const sourceChatId = process.env.SOURCE_CHAT_ID;
@@ -40,6 +45,7 @@ function run() {
     !destinationChatId?.trim()
   )
     throw new Error("missing_ledger_configuration");
+  // Require an existing regular file so recovery cannot silently create a new, empty ledger.
   if (!lstatSync(databasePath).isFile()) throw new Error("ledger_unavailable");
   const ledger = openReportLedger({
     databasePath,
@@ -58,6 +64,8 @@ function run() {
         !/^[1-9]\d*$/.test(expected)
       )
         throw new Error("invalid_arguments");
+      // The expected attempt prevents a decision based on stale status from resolving a newer send.
+      // The ledger validates the evidence and saves the decision and audit record together.
       const messageId = values.get("--message-id");
       return ledger.reconcileDelivery({
         deliveryId: values.get("--id") ?? "",
@@ -69,6 +77,7 @@ function run() {
         ...(messageId === undefined ? {} : { messageId }),
       });
     }
+    // Status omits report content and source evidence; reading it never advances delivery state.
     const delivery = ledger.getDelivery(values.get("--id") ?? "");
     if (!delivery) throw new Error("delivery_not_found");
     return {
@@ -87,11 +96,13 @@ function run() {
         lastError: delivery.lastError,
         adapterKind: delivery.adapterKind,
         reconciliations: delivery.reconciliations,
+        // An uncertain send can be replayed only within the stored adapter's UUID safety window.
         uncertainReplayUntilMs:
           delivery.adapterKind === "lark_app_api" &&
           delivery.firstAttemptMs !== null
             ? delivery.firstAttemptMs + 55 * 60_000
             : null,
+        // Expired claims are unknown outcomes, not proof that no message reached Lark.
         reconciliationRequired:
           delivery.state === "failed" ||
           (delivery.state === "uncertain" &&
@@ -113,6 +124,7 @@ try {
   console.log(JSON.stringify(result));
   if (result.status === "blocked") process.exitCode = 1;
 } catch (error) {
+  // Expose stable operator reasons, never raw storage errors or configuration values.
   const known = [
     "invalid_arguments",
     "missing_ledger_configuration",

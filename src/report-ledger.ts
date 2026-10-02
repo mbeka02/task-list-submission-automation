@@ -16,6 +16,7 @@ import {
   reportEntries,
 } from "./storage/schema.js";
 
+/** Accessible history coverage for one business date, not an atomic snapshot or full edit history. */
 export interface CompleteScan {
   status: "complete";
   appId: string;
@@ -27,9 +28,11 @@ export interface CompleteScan {
   replyPolicy: "include" | "exclude";
   messages: SubmissionInput["messages"];
 }
+/** Submission rules with the policy version retained alongside the frozen report. */
 export type ReportPolicy = SubmissionInput["policy"] & {
   policyVersion: string;
 };
+/** History and policy to validate before freezing; incomplete scans cannot produce a report. */
 export interface PrepareReportInput {
   businessDate: string;
   scan:
@@ -37,6 +40,7 @@ export interface PrepareReportInput {
     | (Omit<CompleteScan, "status"> & { status: "incomplete" | "unavailable" });
   policy: ReportPolicy;
 }
+/** Frozen app, destination, text and UUID reused on retries, with deadlines for this attempt. */
 export interface OutboundReport {
   appId: string;
   destinationChatId: string;
@@ -47,7 +51,7 @@ export interface OutboundReport {
   /** Last safe POST start while leaving 15 seconds inside the claim lease. */
   claimDeadlineMs?: number;
 }
-/** Explicit rejection means this request was not accepted; thrown errors remain uncertain. */
+/** Acknowledged success, proven non-acceptance, or an expired safety deadline; thrown errors are uncertain. */
 export type TransportOutcome =
   | { messageId: string }
   | {
@@ -67,13 +71,14 @@ export type TransportOutcome =
         | "credentials_invalid";
     };
 
-/** Only the app API adapter declares the documented one-hour UUID contract. */
+/** One outbound attempt; only the app API adapter declares the documented one-hour UUID contract. */
 export type DeliveryTransport = ((
   request: OutboundReport,
 ) => Promise<TransportOutcome>) & {
   deduplication?: "lark_uuid_one_hour";
 };
 
+/** SQLite and fixed app/group scope; without a transport, ledger operations cannot contact Lark. */
 export interface LedgerOptions {
   databasePath: string;
   /** Inspect an existing migrated ledger without migrations or writes. */
@@ -86,7 +91,10 @@ export interface LedgerOptions {
   newSendUuid?: () => string;
 }
 
-/** Reviewed local decision; the attempt number fences stale operator actions. */
+/**
+ * Reviewed outcome with operator evidence; the attempt number fences stale decisions.
+ * Sent requires the observed Lark message ID; not-sent only makes a later attempt eligible.
+ */
 export interface ReconcileDeliveryInput {
   deliveryId: string;
   now: number;
@@ -103,8 +111,13 @@ const REQUEST_BUDGET_MS = 15_000;
 const UNCERTAIN_REPLAY_MS = 55 * 60_000;
 const MIN_RETRY_MS = 30_000;
 
+/** Source evidence contradicts an earlier observation, so report preparation must stop. */
 class EvidenceConflict extends Error {}
 
+/**
+ * Open an app/group-scoped ledger and apply migrations unless inspection is read-only.
+ * Returned operations freeze reports, inspect state, attempt delivery or record reviewed recovery.
+ */
 export function openReportLedger(options: LedgerOptions) {
   const sqlite = new Database(options.databasePath, {
     readonly: options.readOnly ?? false,
@@ -126,6 +139,7 @@ export function openReportLedger(options: LedgerOptions) {
     sqlite.close();
     throw error;
   }
+  /** Load a scoped delivery with ordered frozen entries and their evidence; foreign IDs return null. */
   function getDelivery(deliveryId: string) {
     const row = db
       .select()
@@ -161,12 +175,17 @@ export function openReportLedger(options: LedgerOptions) {
         }
       : null;
   }
+  /** Return preparation reasons and any retained evidence needed for operator review. */
   function blocked(
     reasons: string[],
     evidenceVersions: EvidenceObservation[] = [],
   ) {
     return { status: "blocked" as const, reasons, evidenceVersions };
   }
+  /**
+   * Validate coverage and submissions, then persist evidence and freeze a report atomically.
+   * A valid repeat reuses the existing frozen report; no network request happens here.
+   */
   function prepareDailyReport(input: PrepareReportInput) {
     if (
       input.policy.appId !== options.appId ||
@@ -448,8 +467,10 @@ export function openReportLedger(options: LedgerOptions) {
     }
   }
 
+  /** Recover expired claims, enforce retry eligibility, claim one attempt and persist its outcome. */
   async function deliverAttempt(input: { deliveryId: string; now: number }) {
     let delivery = getDelivery(input.deliveryId);
+    // A crashed worker may have reached Lark before losing its acknowledgement.
     if (
       delivery &&
       delivery.state === "sending" &&
@@ -477,6 +498,7 @@ export function openReportLedger(options: LedgerOptions) {
       delivery = getDelivery(input.deliveryId);
     }
     if (!delivery || !options.transport) return { status: "not_sent" as const };
+    // Never replace damaged frozen content or missing evidence with a newly rendered report.
     if (
       delivery.cutoffMs === null ||
       delivery.textHash !==
@@ -493,6 +515,7 @@ export function openReportLedger(options: LedgerOptions) {
       !Number.isSafeInteger(input.now + CLAIM_LEASE_MS)
     )
       return { status: "not_sent" as const, reason: "invalid_delivery_time" };
+    // Both the current transport and the original attempt must support the same UUID contract.
     if (
       delivery.state === "uncertain" &&
       (options.transport.deduplication !== "lark_uuid_one_hour" ||
@@ -513,6 +536,8 @@ export function openReportLedger(options: LedgerOptions) {
       (delivery.nextAttemptMs === null || input.now < delivery.nextAttemptMs)
     )
       return { status: "not_sent" as const, reason: "retry_not_due" };
+    // The guarded update lets one worker claim this state/attempt; the token fences late results.
+    // Keep the earliest attempt time so retries cannot extend the UUID safety window.
     const claimToken = randomUUID();
     const claimed = db
       .update(deliveries)
@@ -542,6 +567,7 @@ export function openReportLedger(options: LedgerOptions) {
       .returning()
       .get();
     if (!claimed) return { status: "not_sent" as const };
+    // The claim is already committed. Network latency must not hold a SQLite transaction open.
     try {
       const ack = await options.transport({
         appId: claimed.appId,
@@ -558,6 +584,7 @@ export function openReportLedger(options: LedgerOptions) {
       if ("status" in ack) {
         // Rejection of this replay says nothing about whether an earlier request arrived.
         const completedMs = Math.max(input.now, (options.clock ?? Date.now)());
+        // Persist bounded backoff for later scheduler checks instead of sleeping inside a worker.
         const delayMs = Math.min(
           900_000,
           MIN_RETRY_MS * 2 ** Math.min(claimed.attemptCount - 1, 5),
@@ -622,6 +649,7 @@ export function openReportLedger(options: LedgerOptions) {
         ? { status: "sent" as const }
         : { status: "uncertain" as const };
     } catch {
+      // A transport error or failed acknowledgement write leaves the send's outcome unknown.
       try {
         db.update(deliveries)
           .set({
@@ -646,7 +674,7 @@ export function openReportLedger(options: LedgerOptions) {
     }
   }
 
-  /** Record a reviewed decision atomically; this operation never invokes a transport. */
+  /** Resolve an uncertain, failed or expired in-flight attempt with an audited local decision. */
   function reconcileDelivery(input: ReconcileDeliveryInput) {
     if (
       (input.decision !== "sent" && input.decision !== "not-sent") ||
@@ -663,6 +691,7 @@ export function openReportLedger(options: LedgerOptions) {
       input.now < 0
     )
       return { status: "blocked" as const, reason: "invalid_reconciliation" };
+    // An immediate transaction keeps the state check, decision and appended evidence together.
     try {
       return db.transaction(
         (tx) => {
@@ -684,6 +713,8 @@ export function openReportLedger(options: LedgerOptions) {
               status: "blocked" as const,
               reason: "stale_reconciliation",
             };
+          // Not-sent clears the claim and enables a later attempt; it never calls the transport.
+          // Preserve the frozen UUID and first attempt time rather than restarting their window.
           tx.update(deliveries)
             .set({
               state: input.decision === "sent" ? "sent" : "retryable",

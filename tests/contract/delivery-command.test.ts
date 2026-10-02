@@ -81,6 +81,66 @@ function command(
   });
 }
 
+test("the same recovery commands inspect and reconcile source-group reminder IDs", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "task-list-reminder-command-"));
+  const path = join(directory, "ledger.sqlite");
+  const first = Date.parse("2026-10-02T06:30:00.000Z");
+  const ledger = openReportLedger({
+    ...config,
+    destinationChatId: config.sourceChatId,
+    databasePath: path,
+    clock: () => first,
+    transport: async () => {
+      throw new Error("lost response");
+    },
+  });
+  try {
+    const prepared = ledger.prepareReminder({
+      businessDate: "2026-10-02",
+      text: "Synthetic approved reminder",
+      policyVersion: "command-v1",
+    });
+    if (prepared.status !== "frozen") throw new Error("Expected reminder");
+    await ledger.deliverDelivery({
+      deliveryId: prepared.delivery.id,
+      now: first,
+    });
+    const result = command(path, ["status", "--id", prepared.delivery.id]);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      delivery: {
+        kind: "reminder",
+        state: "uncertain",
+        reconciliationRequired: true,
+      },
+    });
+    const reviewed = command(path, [
+      "reconcile",
+      "--id",
+      prepared.delivery.id,
+      "--decision",
+      "sent",
+      "--expected-attempt",
+      "1",
+      "--operator",
+      "Anthony",
+      "--reason",
+      "Verified the exact reminder in the source group",
+      "--message-id",
+      "om_reminder_reviewed",
+    ]);
+    expect(reviewed.status).toBe(0);
+    expect(ledger.getDelivery(prepared.delivery.id)).toMatchObject({
+      state: "sent",
+      messageId: "om_reminder_reviewed",
+      reconciliations: [{ operator: "Anthony" }],
+    });
+  } finally {
+    ledger.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("the approved status command reports an uncertain delivery without sending or changing it", async () => {
   const fixture = seed();
   try {

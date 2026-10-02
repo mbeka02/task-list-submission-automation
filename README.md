@@ -2,7 +2,7 @@
 
 A TypeScript worker for compiling daily Lark task-list submitters using Nairobi time. The planned workflow includes a 09:30 reminder and a report after the inclusive 10:00 cutoff, Monday–Friday excluding Kenyan public holidays.
 
-Phase 0 and Slices 1–4 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, the real Lark SDK history reader with saved user OAuth renewal, scoped app-bot delivery, safe retries and local operator reconciliation. One explicitly approved private-group test confirmed live app-bot sending through the existing CLI and persisted its acknowledgement. Worker SDK credential provisioning/renewal proof, production destination eligibility and scheduling remain activation gates.
+Phase 0 and Slices 1–5 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, the real Lark SDK history reader with saved user OAuth renewal, scoped app-bot delivery, safe retries, operator reconciliation and reminder/report due checks. One explicitly approved private-group test confirmed live app-bot sending through the existing CLI. Worker commands keep sending disabled; worker SDK credentials, production destination access and deployment acceptance remain activation gates.
 
 ## Setup
 
@@ -32,19 +32,41 @@ File-based renewal uses the pinned SDK OAuth endpoint, saves refresh intent befo
 
 The initial file format is JSON: `version: 1`, `state: "ready"`, `appId`, `readerOpenId`, `accessToken`, `expiresAtMs`, `refreshToken`, and `refreshExpiresAtMs`. Both expiries are absolute epoch milliseconds derived from the actual authorization response. Provision a separate OAuth grant for the worker under the currently approved app/account; sharing and rotating the CLI session's refresh token could interfere with the CLI. Initial login and recovery commands are not implemented yet. A bounded read-only CLI check confirmed external-group access and response shape; fixture tests prove local SDK behavior, not live worker renewal or least-privilege permissions.
 
-`openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes `prepareDailyReport({ businessDate, scan, policy })`, `getDelivery(deliveryId)`, `deliverDelivery({ deliveryId, now })`, `reconcileDelivery(...)` and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
+`openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes report/reminder preparation, scoped delivery inspection/date-range discovery, `deliverDelivery({ deliveryId, now, deliveryDeadlineMs? })`, reviewed reconciliation and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
 
 Preparation requires a complete appropriately bounded scan and explicit reply policy. It preserves candidate observations and freezes distinct names, exact text, source evidence, policy version and a stable UUID in one transaction. Repeated preparation keeps the frozen report. Incomplete/ambiguous/conflicting evidence blocks freezing; a genuinely successful empty scan produces explicit zero-submission text. Ordinary unrelated posts are not retained as new business records.
 
 Delivery atomically claims an eligible report, commits the claim, sends its persisted text/UUID outside the transaction and records the acknowledgement. Other claimants and acknowledged reports do not send. A definitive temporary rejection becomes `retryable`; permission/bot/credential rejection becomes `failed`; lost responses or acknowledgement writes remain `uncertain`. Expired claims recover as uncertain rather than resetting to pending. Claim tokens and attempt numbers fence competing workers and stale operator decisions.
 
-Retry eligibility is saved in SQLite. Definitive rejections use backoff from response completion, starting at 30 seconds and increasing to a 15-minute cap; a longer supplied retry delay is respected. Each `deliverDelivery` call makes at most one attempt and never sleeps or starts a retry loop. Slice 5 will supply due checks. Retries preserve the original text, UUID and earliest attempt time.
+Retry eligibility is saved in SQLite. Definitive rejections use backoff from response completion, starting at 30 seconds and increasing to a 15-minute cap; a longer supplied retry delay is respected. Each `deliverDelivery` call makes at most one attempt. The worker supplies later due checks; retries preserve the original text, UUID and earliest attempt time.
 
 `createLarkDeliveryTransport(options)` in `src/lark-delivery.ts` supplies the real SDK app-bot adapter: fixed `appId`/`appSecret`, `allowedDestinationChatIds`, Lark domain and tenant credentials. It obtains a tenant token explicitly and sends text with `receive_id_type=chat_id`; it never falls back to a user or another destination. Known rejection codes are sanitized into outcomes; malformed responses, in-progress responses, timeouts and ambiguous server failures remain uncertain. Its default HTTP timeout is 15 seconds per request with redirects disabled; an injected HTTP instance must enforce its own timeout. SDK logs are suppressed to keep credentials and request bodies out of diagnostics.
 
 Only attempts recorded as the app API may automatically replay an uncertain request, and only before 55 minutes from the earliest saved attempt. This reserves five minutes inside [Lark's documented one-hour UUID window](https://open.larksuite.com/document/server-docs/im-v1/message/create). Both the UUID deadline and the 60-second claim lease are checked again after obtaining credentials; the latest message POST start leaves 15 seconds inside the lease. An unverified adapter cannot inherit this guarantee by later switching to the app API. Rejected replays cannot erase earlier uncertainty. Outside the window, or after a deadline/permanent replay problem, operator review is required. These bounds reduce duplicate risk; they do not promise exactly-once delivery.
 
-No production sending command is installed. Preflight continues to reject `ENABLE_OUTBOUND=true`. The approved private smoke test establishes CLI app-bot eligibility and durable acknowledgement, not worker SDK credential provisioning, external reminder eligibility or access to the management group.
+Worker commands and preflight reject `ENABLE_OUTBOUND=true`. The approved private smoke test establishes CLI app-bot eligibility and durable acknowledgement; worker SDK credentials, external reminder eligibility and management access remain unproven.
+
+## Reminder and scheduled recovery
+
+`createDueWorker(options)` in `src/due-worker.ts` exposes `runDueWork({ now })`, read-only `getStatus({ now })` and `close()`. It uses the real history reader and two ledger scopes in one SQLite file: reminders target the source group, reports target management. The existing four business tables and migrations support both kinds; no new migration is needed.
+
+On Monday–Friday excluding supplied Kenyan public holidays, the reminder window is **09:30 inclusive to 10:00 exclusive** in Nairobi. Its approved text is “Please post today's task list in this group by 10:00 AM Nairobi time.” A reminder needs no history read and freezes its own text/UUID without report entries. At **10:00**, the report reads that day's history, freezes it and attempts delivery independently. A normal single-worker run completes one compilation read per eligible date; incomplete or blocked reads can be retried. Saved reports bypass history on delivery retries. Separate processes can read the same unfrozen date, while SQLite uniqueness and claims protect the frozen delivery.
+
+Startup and later checks recover today's unfinished work. Older unfinished reports appear under `backfill`, with delivery IDs and states where a frozen record exists; calendar revisions cannot hide those records. Old uncertain/failed reminders remain under `reminderReviews`. Neither is automatically replayed. Lists show at most 31 items with total/truncation metadata. Reminder retries stop at 10:00, and automatic report publication stops at the next Nairobi midnight. The app adapter rechecks these deadlines after credentials. A read crossing midnight can retain a frozen report for reviewed backfill. Uncertainty still follows S4's UUID/claim rules.
+
+Configure the fields in `.env.example`, create the database's parent directory, and supply a reviewed calendar before running:
+
+```bash
+pnpm worker status
+pnpm worker run --once
+pnpm worker run
+```
+
+`status` requires an existing migrated ledger and opens it read-only; it needs no SDK credentials and contacts no Lark endpoint. `run` additionally requires the app secret, approved reader open ID and separate worker OAuth-file path. It may read Lark after cutoff and freeze local preview work, but installs no outbound transport. Use an isolated preview database. `run --once` performs one check; continuous `run` checks at startup, then waits `WORKER_CHECK_INTERVAL_MS` after each completed check (default 60000; accepted range 1000–3600000). Checks never overlap. It prints changed state, keeps unchanged checks quiet, and waits for an active check before closing on SIGINT/SIGTERM.
+
+Calendar JSON uses `version`, `fromDate`, `throughDate`, `reviewedOn`, `sourceUrls` (HTTPS references) and `publicHolidays` (real `YYYY-MM-DD` dates). Coverage must include activation through today; future review dates, malformed dates and missing provenance block work. Metadata validation cannot prove official annual completeness. Keep the actual maintained dataset under ignored `data/`; no approved annual Kenyan calendar is bundled. Refresh the reviewed configuration and restart when coverage changes.
+
+`WORKER_RESTORE_MODE=true` pauses reads, freezing and outbound attempts while keeping review status visible. Leave it enabled after restoring a backup until recent sends have been reviewed. The reviewed restore-release procedure belongs to Phase 6; this flag cannot detect a restored file automatically. Recent read/preparation failure reasons are visible in the running worker and its JSON output; a separate status process reconstructs durable delivery state rather than that transient read diagnostic.
 
 ## Delivery status and reconciliation
 
@@ -56,7 +78,7 @@ pnpm delivery reconcile --id <delivery-id> --decision sent --expected-attempt <n
 pnpm delivery reconcile --id <delivery-id> --decision not-sent --expected-attempt <number> --operator "Anthony" --reason "Evidence establishing that the original request did not send"
 ```
 
-Status opens an existing migrated file read-only and reports attempts, retry/lease times, adapter kind, message ID, failure reason, replay deadline and review history. Wrong scope or missing storage blocks the command. Reconciliation opens the existing file with normal migrations and records the decision atomically. It accepts uncertain, failed or expired in-flight deliveries with the current attempt number; active claims, completed deliveries, stale attempts and invalid arguments are blocked.
+The same commands resolve report IDs only in the configured management scope and reminder IDs only in the configured source scope. Status opens the migrated file read-only and reports attempts, retry/lease times, adapter kind, message ID, failure reason, replay deadline and review history. Wrong scope or missing storage blocks the command. Reconciliation records a decision atomically. It accepts uncertain, failed or expired in-flight deliveries with the current attempt number; active claims, completed deliveries, stale attempts and invalid arguments are blocked.
 
 A `sent` decision requires the actual Lark message ID and leaves the report completed. A `not-sent` decision needs evidence establishing non-delivery, not just an incomplete search or a similar-looking message. It records the operator/reason and permits a later attempt with the original payload/UUID; the command itself sends nothing. If evidence is unresolved, leave the delivery uncertain. Review never resets the earliest attempt time or creates a new UUID to extend replay safety. A correction would need an explicitly labelled new report revision; correction creation is outside this slice.
 

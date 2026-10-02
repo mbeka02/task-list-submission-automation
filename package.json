@@ -20,7 +20,8 @@
     "build": "tsc --project tsconfig.build.json",
     "db:generate": "drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "drizzle-kit migrate --config drizzle.config.ts",
-    "delivery": "node --env-file-if-exists=.env --import tsx src/delivery-command.ts"
+    "delivery": "node --env-file-if-exists=.env --import tsx src/delivery-command.ts",
+    "worker": "node --env-file-if-exists=.env --import tsx src/worker-command.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "1.74.0",

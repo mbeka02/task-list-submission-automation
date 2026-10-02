@@ -15,6 +15,8 @@ export interface SubmissionObservation {
   messageType: string;
   content: string;
   deleted: boolean;
+  observedAtMs?: number;
+  sourceRoute?: string;
   rootMessageId?: string;
   provenance?: "original" | "forwarded" | "management_recap";
 }

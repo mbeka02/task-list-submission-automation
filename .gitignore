@@ -33,6 +33,7 @@ coverage/
 *.pfx
 credentials.json
 tokens.json
+user-oauth.json*
 
 # Runtime business data and backups
 /data/

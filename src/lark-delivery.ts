@@ -130,7 +130,12 @@ export function createLarkDeliveryTransport(
         retryAfterMs: 30_000,
       };
     }
-    // Credential retrieval consumes time, so recheck both deadlines immediately before the POST.
+    // Credential retrieval consumes time, so recheck delivery, replay and claim deadlines before POST.
+    if (
+      request.deliveryDeadlineMs !== undefined &&
+      (options.clock ?? Date.now)() >= request.deliveryDeadlineMs
+    )
+      return { status: "failed", reason: "delivery_window_expired" };
     if (
       request.retryDeadlineMs !== undefined &&
       (options.clock ?? Date.now)() >= request.retryDeadlineMs

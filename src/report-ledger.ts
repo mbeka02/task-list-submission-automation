@@ -50,6 +50,8 @@ export interface OutboundReport {
   retryDeadlineMs?: number;
   /** Last safe POST start while leaving 15 seconds inside the claim lease. */
   claimDeadlineMs?: number;
+  /** Exclusive publication end (reminder cutoff or scheduler deadline); recheck after credentials. */
+  deliveryDeadlineMs?: number;
 }
 /** Acknowledged success, proven non-acceptance, or an expired safety deadline; thrown errors are uncertain. */
 export type TransportOutcome =
@@ -68,7 +70,8 @@ export type TransportOutcome =
       reason:
         | "destination_denied"
         | "outbound_scope_mismatch"
-        | "credentials_invalid";
+        | "credentials_invalid"
+        | "delivery_window_expired";
     };
 
 /** One outbound attempt; only the app API adapter declares the documented one-hour UUID contract. */
@@ -181,6 +184,103 @@ export function openReportLedger(options: LedgerOptions) {
     evidenceVersions: EvidenceObservation[] = [],
   ) {
     return { status: "blocked" as const, reasons, evidenceVersions };
+  }
+  /** Find the initial logical delivery for a date/kind without requiring its generated ID. */
+  function getDailyDelivery(businessDate: string, kind: "report" | "reminder") {
+    const row = db
+      .select({ id: deliveries.id })
+      .from(deliveries)
+      .where(
+        and(
+          eq(deliveries.appId, options.appId),
+          eq(deliveries.sourceChatId, options.sourceChatId),
+          eq(deliveries.destinationChatId, options.destinationChatId),
+          eq(deliveries.businessDate, businessDate),
+          eq(deliveries.kind, kind),
+          eq(deliveries.revision, 1),
+        ),
+      )
+      .get();
+    return row ? getDelivery(row.id) : null;
+  }
+
+  /** Read bounded date-range state for discovery without loading source bodies or report entries. */
+  function listDailyDeliveries(
+    fromDate: string,
+    throughDate: string,
+    kind: "report" | "reminder",
+  ) {
+    return db
+      .select({
+        id: deliveries.id,
+        businessDate: deliveries.businessDate,
+        state: deliveries.state,
+      })
+      .from(deliveries)
+      .where(
+        and(
+          eq(deliveries.appId, options.appId),
+          eq(deliveries.sourceChatId, options.sourceChatId),
+          eq(deliveries.destinationChatId, options.destinationChatId),
+          eq(deliveries.kind, kind),
+          eq(deliveries.revision, 1),
+          sql`${deliveries.businessDate} >= ${fromDate}`,
+          lte(deliveries.businessDate, throughDate),
+        ),
+      )
+      .orderBy(asc(deliveries.businessDate))
+      .all();
+  }
+
+  /** Freeze a source-group reminder independently of submission evidence and report delivery. */
+  function prepareReminder(input: {
+    businessDate: string;
+    text: string;
+    policyVersion: string;
+  }) {
+    const id = createHash("sha256")
+      .update(
+        JSON.stringify([
+          options.appId,
+          input.businessDate,
+          options.sourceChatId,
+          options.destinationChatId,
+          "reminder",
+          1,
+        ]),
+      )
+      .digest("hex");
+    try {
+      return db.transaction(
+        (tx) => {
+          const existing = getDailyDelivery(input.businessDate, "reminder");
+          if (existing)
+            return { status: "frozen" as const, delivery: existing };
+          tx.insert(deliveries)
+            .values({
+              id,
+              appId: options.appId,
+              businessDate: input.businessDate,
+              sourceChatId: options.sourceChatId,
+              destinationChatId: options.destinationChatId,
+              kind: "reminder",
+              policyVersion: input.policyVersion,
+              text: input.text,
+              sendUuid: (options.newSendUuid ?? randomUUID)(),
+              state: "pending",
+              cutoffMs: Date.parse(`${input.businessDate}T09:30:00.000+03:00`),
+              textHash: createHash("sha256").update(input.text).digest("hex"),
+            })
+            .run();
+          const delivery = getDelivery(id);
+          if (!delivery) throw new Error("Frozen reminder unavailable");
+          return { status: "frozen" as const, delivery };
+        },
+        { behavior: "immediate" },
+      );
+    } catch {
+      return blocked(["storage_error"]);
+    }
   }
   /**
    * Validate coverage and submissions, then persist evidence and freeze a report atomically.
@@ -459,7 +559,11 @@ export function openReportLedger(options: LedgerOptions) {
     }
   }
   /** Persist a claim before networking; storage failure before that point cannot send. */
-  async function deliverDelivery(input: { deliveryId: string; now: number }) {
+  async function deliverDelivery(input: {
+    deliveryId: string;
+    now: number;
+    deliveryDeadlineMs?: number;
+  }) {
     try {
       return await deliverAttempt(input);
     } catch {
@@ -468,7 +572,11 @@ export function openReportLedger(options: LedgerOptions) {
   }
 
   /** Recover expired claims, enforce retry eligibility, claim one attempt and persist its outcome. */
-  async function deliverAttempt(input: { deliveryId: string; now: number }) {
+  async function deliverAttempt(input: {
+    deliveryId: string;
+    now: number;
+    deliveryDeadlineMs?: number;
+  }) {
     let delivery = getDelivery(input.deliveryId);
     // A crashed worker may have reached Lark before losing its acknowledgement.
     if (
@@ -515,6 +623,17 @@ export function openReportLedger(options: LedgerOptions) {
       !Number.isSafeInteger(input.now + CLAIM_LEASE_MS)
     )
       return { status: "not_sent" as const, reason: "invalid_delivery_time" };
+    if (
+      delivery.kind === "reminder" &&
+      input.now >= Date.parse(`${delivery.businessDate}T10:00:00.000+03:00`)
+    )
+      return { status: "not_sent" as const, reason: "delivery_window_expired" };
+    if (
+      input.deliveryDeadlineMs !== undefined &&
+      (!Number.isSafeInteger(input.deliveryDeadlineMs) ||
+        input.now >= input.deliveryDeadlineMs)
+    )
+      return { status: "not_sent" as const, reason: "delivery_window_expired" };
     // Both the current transport and the original attempt must support the same UUID contract.
     if (
       delivery.state === "uncertain" &&
@@ -574,6 +693,17 @@ export function openReportLedger(options: LedgerOptions) {
         destinationChatId: claimed.destinationChatId,
         text: claimed.text,
         uuid: claimed.sendUuid,
+        ...(claimed.kind === "reminder" ||
+        input.deliveryDeadlineMs !== undefined
+          ? {
+              deliveryDeadlineMs: Math.min(
+                claimed.kind === "reminder"
+                  ? Date.parse(`${claimed.businessDate}T10:00:00.000+03:00`)
+                  : Number.POSITIVE_INFINITY,
+                input.deliveryDeadlineMs ?? Number.POSITIVE_INFINITY,
+              ),
+            }
+          : {}),
         ...(options.transport.deduplication === "lark_uuid_one_hour"
           ? { claimDeadlineMs: input.now + CLAIM_LEASE_MS - REQUEST_BUDGET_MS }
           : {}),
@@ -756,6 +886,9 @@ export function openReportLedger(options: LedgerOptions) {
   return {
     prepareDailyReport,
     getDelivery,
+    getDailyDelivery,
+    listDailyDeliveries,
+    prepareReminder,
     deliverDelivery,
     reconcileDelivery,
     close: () => sqlite.close(),

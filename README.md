@@ -2,7 +2,7 @@
 
 A TypeScript worker for compiling daily Lark task-list submitters using Nairobi time. The planned workflow includes a 09:30 reminder and a report after the inclusive 10:00 cutoff, Monday–Friday excluding Kenyan public holidays.
 
-Phase 0, Slice 1 and the local Slice 2 path are implemented: offline preflight, deterministic submission evaluation, durable report/evidence storage and delivery through a supplied controlled transport. The production Lark history/sending adapters, full retry/reconciliation workflow and scheduling are still pending.
+Phase 0 and Slices 1–3 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, delivery through a controlled transport, and the real Lark SDK history reader with saved user OAuth renewal. Initial worker authorization, live SDK renewal/access proof, production sending, full retry/reconciliation and scheduling are still pending.
 
 ## Setup
 
@@ -23,6 +23,14 @@ The project pins Node 24.21.0. `better-sqlite3` may need Python, make and a C/C+
 `pnpm preflight` loads `.env` when present and defaults to preview mode with outbound delivery disabled. It checks a real in-memory SQLite/Drizzle query and constructs a Lark-domain SDK client using dummy credentials. It makes no network requests or persistent business database. Every mode currently rejects outbound delivery.
 
 `evaluateSubmissions({ businessDate, policy, messages })` in `src/evaluate-submissions.ts` evaluates current canonical observations. It recognizes supported text/rich-text task lists, applies the Nairobi date/cutoff and supplied holiday calendar, resolves platform names, deduplicates scoped sender identities and explains exclusion/review decisions. Unconfirmed task replies require review. A `ready` result establishes detector readiness; complete retrieval and approved publication policy remain separate requirements.
+
+`createSubmissionHistoryReader(options)` in `src/submission-history.ts` exposes `readSubmissionHistory({ businessDate, sourceChatId, replyPolicy })`. The selected route uses user OAuth under one approved app and source group. V1 counts main conversation posts only (`replyPolicy: "exclude"`); including thread replies returns an unsupported-policy outcome. Reads start at/after the inclusive 10:00 cutoff, retrieve all pages for Nairobi midnight–10:00, and preserve current text/post content, sender identity/names, raw millisecond timestamps, recalls, forwarding markers and per-page observation times. Overlapping pages select the latest version without masking conflicts. A complete read feeds `prepareDailyReport`; partial, malformed, denied, rate-limited or unavailable reads cannot freeze an empty report.
+
+Reader options require `appId`, `appSecret`, `sourceChatId` and either a trusted external `getUserAccessToken()` supplier or `credentialFile` plus the approved account's app-scoped `readerOpenId`. The supplier returns `{ appId, accessToken, expiresAtMs }` and is checked on every page. `maxPages` defaults to 100 and accepts 1–100; reaching it with remaining pages blocks completion. The default HTTP transport has a 15-second timeout, no redirects and a 10 MiB response limit. `credentialTimeoutMs` defaults to 15 seconds and can be lowered. There is no automatic retry loop or background polling in this module; an injected transport must also enforce its own HTTP timeout.
+
+File-based renewal uses the pinned SDK OAuth endpoint, saves refresh intent before networking, and atomically saves replacement tokens before history reads. An exclusive file lock prevents competing renewals. Expired refresh grants, revocation and uncertain/interrupted renewals require operator action; no old refresh key is replayed automatically after uncertainty. A crash can leave a lock and `refreshing` state: stop the worker and reauthorize through the future reviewed recovery procedure rather than deleting state and retrying blindly. Credentials require a worker-owned private directory (0700) and regular file (0600), stored on local persistent storage; symlinks and access by other users are rejected. This file contains secrets and must stay under ignored `data/` or outside the repository.
+
+The initial file format is JSON: `version: 1`, `state: "ready"`, `appId`, `readerOpenId`, `accessToken`, `expiresAtMs`, `refreshToken`, and `refreshExpiresAtMs`. Both expiries are absolute epoch milliseconds derived from the actual authorization response. Provision a separate OAuth grant for the worker under the currently approved app/account; sharing and rotating the CLI session's refresh token could interfere with the CLI. Initial login and recovery commands are not implemented yet. A bounded read-only CLI check confirmed external-group access and response shape; fixture tests prove local SDK behavior, not live worker renewal or least-privilege permissions.
 
 `openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes `prepareDailyReport({ businessDate, scan, policy })`, `getDelivery(deliveryId)`, `deliverDelivery({ deliveryId, now })` and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
 
@@ -46,7 +54,7 @@ To target a submission behavior:
 pnpm exec vitest run tests/unit/evaluate-submissions.test.ts -t 'test name'
 ```
 
-`pnpm test:contract` runs the preflight CLI contract tests. `pnpm test:integration` runs the file-backed SQLite report tests, including independent-process races. Automated tests use synthetic inputs and controlled transports without live Lark credentials or messages.
+`pnpm test:contract` runs the preflight CLI and Lark SDK history/OAuth contract tests. SDK tests exercise a local HTTP server and real temporary credential files; report preparation also uses real SQLite. `pnpm test:integration` runs the file-backed SQLite report tests, including independent-process races. Automated tests use synthetic inputs without live Lark credentials or messages.
 
 ## Database and delivery
 

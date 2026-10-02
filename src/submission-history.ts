@@ -14,6 +14,7 @@ import {
   fileUserAccessToken,
 } from "./user-oauth-credentials.js";
 
+// Completion covers accessible history; it does not imply an atomic Lark snapshot.
 export type HistoryScan =
   | CompleteScan
   | (Omit<CompleteScan, "status"> & {
@@ -85,6 +86,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     // SDK transport returns unwrapped data; Axios types describe an envelope.
     httpInstance: (options.httpInstance ?? http) as HttpInstance,
     loggerLevel: LoggerLevel.error,
+    // SDK transport errors can contain credential headers and request bodies.
     logger: {
       error: silent,
       warn: silent,
@@ -120,6 +122,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
       fromMs,
       throughMs,
     };
+    // Preserve partial observations without presenting a failure as an empty success.
     function failed(
       reason: string,
       status: "incomplete" | "unavailable" = "incomplete",
@@ -136,6 +139,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     }
     if (input.sourceChatId !== options.sourceChatId)
       return failed("source_scope_mismatch", "unavailable");
+    // Chat history covers roots; replies require a separate thread-discovery path.
     if (input.replyPolicy !== "exclude")
       return failed("unsupported_reply_policy", "unavailable");
     const maxPages = options.maxPages ?? 100;
@@ -167,6 +171,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
         if (pagesRead >= maxPages) return failed("page_limit_reached");
         let grant: UserAccessGrant;
         let credentialTimer: ReturnType<typeof setTimeout> | undefined;
+        // Recheck/renew per page. The deadline limits waiting, not the supplier's work.
         try {
           grant = await Promise.race([
             getUserAccessToken(),
@@ -211,6 +216,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
             params: {
               container_id_type: "chat",
               container_id: options.sourceChatId,
+              // Pad second-based API bounds; the evaluator applies exact milliseconds.
               start_time: String(fromMs / 1000 - 1),
               end_time: String(throughMs / 1000 + 1),
               sort_type: "ByCreateTimeAsc",
@@ -222,6 +228,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
           },
           withUserAccessToken(grant.accessToken),
         );
+        // SDK types do not validate responses; only numeric provider codes are exposed.
         if (!record(response) || !Number.isSafeInteger(response.code))
           return failed(
             "invalid_response",
@@ -245,9 +252,11 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
             pagesRead ? "incomplete" : "unavailable",
           );
         pagesRead += 1;
+        // Each page is observed separately, rather than at the scan's completion time.
         const observedAtMs = (options.clock ?? Date.now)();
         if (!Number.isSafeInteger(observedAtMs) || observedAtMs < throughMs)
           return failed("invalid_clock");
+        // Absent identity/name fields can go to review; malformed source data blocks coverage.
         for (const raw of response.data.items) {
           if (!record(raw)) return failed("invalid_message");
           const createdMs = timestamp(raw.create_time);
@@ -327,12 +336,14 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
           };
           const position = messagePositions.get(observation.messageId);
           const prior = position === undefined ? undefined : messages[position];
+          // A later live copy cannot undo a recall already observed in this scan.
           if (
             prior?.deleted &&
             !observation.deleted &&
             observation.updatedMs >= prior.updatedMs
           )
             return failed("source_conflict");
+          // Keep identity anchors for conflict checks, without backfilling current fields.
           const identity = sourceIdentities.get(observation.messageId);
           if (
             identity &&
@@ -358,9 +369,11 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
                 : {}),
             },
           });
+          // A newer edit must not hide contradictory copies of an older version.
           const versionKey = JSON.stringify([
             observation.messageId,
             observation.updatedMs,
+            // A recall can leave the content update timestamp unchanged.
             observation.deleted,
           ]);
           const versionContent = JSON.stringify([
@@ -373,6 +386,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
           if (knownVersion !== undefined && knownVersion !== versionContent)
             return failed("source_conflict");
           sourceVersions.set(versionKey, versionContent);
+          // Ignore older overlaps; same-time recalls supersede live content.
           if (!prior) {
             messagePositions.set(observation.messageId, messages.length);
             messages.push(observation);
@@ -386,6 +400,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
             messages[position] = observation;
           }
         }
+        // Remaining pages need a fresh cursor; missing/repeated cursors break coverage.
         if (
           response.data.has_more &&
           (typeof response.data.page_token !== "string" ||
@@ -410,6 +425,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
         messages,
       };
     } catch (error) {
+      // Return stable categories rather than raw errors that could expose credentials.
       const status =
         record(error) && record(error.response)
           ? error.response.status

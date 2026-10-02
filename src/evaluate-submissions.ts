@@ -112,6 +112,7 @@ function plainText(
       return "text" in value && typeof value.text === "string"
         ? value.text
         : null;
+    // Without a preferred locale, only a single translation is unambiguous.
     if (!("content" in value)) {
       const localized = Object.entries(value);
       value = locale
@@ -177,6 +178,7 @@ export function evaluateSubmissions(
   // This seam's approved zone is Nairobi (UTC+03:00, without daylight saving).
   const start = Date.parse(`${input.businessDate}T00:00:00.000+03:00`);
   const cutoff = Date.parse(`${input.businessDate}T10:00:00.000+03:00`);
+  // Keep a decision for every input, including exclusions and review issues.
   const decisions = input.messages.map<SubmissionDecision>((message) => {
     if (
       message.appId !== input.policy.appId ||
@@ -210,6 +212,7 @@ export function evaluateSubmissions(
         outcome: "review",
         reason: "invalid_timestamp",
       };
+    // Eligibility follows original send time, even if the content was edited later.
     const exclusion =
       message.createdMs < start || message.createdMs >= start + 86_400_000
         ? "outside_business_date"
@@ -254,12 +257,14 @@ export function evaluateSubmissions(
         outcome: "review",
         reason: "malformed_content",
       };
+    // Normalize classification text while preserving original content as evidence.
     const normalizedText = text
       .normalize("NFKC")
       .replace(/\r\n?/g, "\n")
       .replace(/[‘’]/g, "'")
       .replace(/[‐‑‒–—]/g, "-")
       .trim();
+    // Loose mentions need review; a task list requires a heading and a non-empty item.
     const candidate = /\b(?:to[- ]?do(?:\s+list)?|task\s+list)\b/i.test(
       normalizedText,
     );
@@ -328,14 +333,17 @@ export function evaluateSubmissions(
   });
   const seen = new Set<string>();
   const selected = input.messages
+    // Preserve the link to the original decision after filtering and sorting.
     .map((message, index) => ({ message, index }))
     .filter(({ index }) => decisions[index]?.outcome === "eligible")
+    // The earliest eligible post represents its sender; IDs break equal-time ties.
     .sort(
       (a, b) =>
         a.message.createdMs - b.message.createdMs ||
         a.message.messageId.localeCompare(b.message.messageId),
     )
     .filter(({ message, index }) => {
+      // Serialize the scoped identity so equal names never merge different senders.
       const key = JSON.stringify([
         message.appId,
         message.sender.tenantKey,
@@ -352,6 +360,7 @@ export function evaluateSubmissions(
       seen.add(key);
       return true;
     });
+  // Review issues block readiness even when other messages produced valid entries.
   return {
     status: nonWorking
       ? "not_working_day"

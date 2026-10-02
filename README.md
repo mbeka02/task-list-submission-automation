@@ -2,7 +2,7 @@
 
 A TypeScript worker for compiling daily Lark task-list submitters using Nairobi time. The planned workflow includes a 09:30 reminder and a report after the inclusive 10:00 cutoff, Monday–Friday excluding Kenyan public holidays.
 
-Phase 0 and Slices 1–3 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, delivery through a controlled transport, and the real Lark SDK history reader with saved user OAuth renewal. Initial worker authorization, live SDK renewal/access proof, production sending, full retry/reconciliation and scheduling are still pending.
+Phase 0 and Slices 1–4 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, the real Lark SDK history reader with saved user OAuth renewal, scoped app-bot delivery, safe retries and local operator reconciliation. One explicitly approved private-group test confirmed live app-bot sending through the existing CLI and persisted its acknowledgement. Worker SDK credential provisioning/renewal proof, production destination eligibility and scheduling remain activation gates.
 
 ## Setup
 
@@ -32,11 +32,33 @@ File-based renewal uses the pinned SDK OAuth endpoint, saves refresh intent befo
 
 The initial file format is JSON: `version: 1`, `state: "ready"`, `appId`, `readerOpenId`, `accessToken`, `expiresAtMs`, `refreshToken`, and `refreshExpiresAtMs`. Both expiries are absolute epoch milliseconds derived from the actual authorization response. Provision a separate OAuth grant for the worker under the currently approved app/account; sharing and rotating the CLI session's refresh token could interfere with the CLI. Initial login and recovery commands are not implemented yet. A bounded read-only CLI check confirmed external-group access and response shape; fixture tests prove local SDK behavior, not live worker renewal or least-privilege permissions.
 
-`openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes `prepareDailyReport({ businessDate, scan, policy })`, `getDelivery(deliveryId)`, `deliverDelivery({ deliveryId, now })` and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
+`openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes `prepareDailyReport({ businessDate, scan, policy })`, `getDelivery(deliveryId)`, `deliverDelivery({ deliveryId, now })`, `reconcileDelivery(...)` and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
 
 Preparation requires a complete appropriately bounded scan and explicit reply policy. It preserves candidate observations and freezes distinct names, exact text, source evidence, policy version and a stable UUID in one transaction. Repeated preparation keeps the frozen report. Incomplete/ambiguous/conflicting evidence blocks freezing; a genuinely successful empty scan produces explicit zero-submission text. Ordinary unrelated posts are not retained as new business records.
 
-Delivery atomically claims a pending report, commits the claim, sends its persisted text/UUID outside the transaction and records the acknowledgement. Other claimants and acknowledged reports do not send. Ambiguous responses become uncertain with no automatic resend; expired in-flight claims remain blocked for the later recovery workflow. The current claim lease is 60 seconds. These local behaviors do not establish Lark's delivery eligibility, deduplication guarantees or production readiness.
+Delivery atomically claims an eligible report, commits the claim, sends its persisted text/UUID outside the transaction and records the acknowledgement. Other claimants and acknowledged reports do not send. A definitive temporary rejection becomes `retryable`; permission/bot/credential rejection becomes `failed`; lost responses or acknowledgement writes remain `uncertain`. Expired claims recover as uncertain rather than resetting to pending. Claim tokens and attempt numbers fence competing workers and stale operator decisions.
+
+Retry eligibility is saved in SQLite. Definitive rejections use backoff from response completion, starting at 30 seconds and increasing to a 15-minute cap; a longer supplied retry delay is respected. Each `deliverDelivery` call makes at most one attempt and never sleeps or starts a retry loop. Slice 5 will supply due checks. Retries preserve the original text, UUID and earliest attempt time.
+
+`createLarkDeliveryTransport(options)` in `src/lark-delivery.ts` supplies the real SDK app-bot adapter: fixed `appId`/`appSecret`, `allowedDestinationChatIds`, Lark domain and tenant credentials. It obtains a tenant token explicitly and sends text with `receive_id_type=chat_id`; it never falls back to a user or another destination. Known rejection codes are sanitized into outcomes; malformed responses, in-progress responses, timeouts and ambiguous server failures remain uncertain. Its default HTTP timeout is 15 seconds per request with redirects disabled; an injected HTTP instance must enforce its own timeout. SDK logs are suppressed to keep credentials and request bodies out of diagnostics.
+
+Only attempts recorded as the app API may automatically replay an uncertain request, and only before 55 minutes from the earliest saved attempt. This reserves five minutes inside [Lark's documented one-hour UUID window](https://open.larksuite.com/document/server-docs/im-v1/message/create). Both the UUID deadline and the 60-second claim lease are checked again after obtaining credentials; the latest message POST start leaves 15 seconds inside the lease. An unverified adapter cannot inherit this guarantee by later switching to the app API. Rejected replays cannot erase earlier uncertainty. Outside the window, or after a deadline/permanent replay problem, operator review is required. These bounds reduce duplicate risk; they do not promise exactly-once delivery.
+
+No production sending command is installed. Preflight continues to reject `ENABLE_OUTBOUND=true`. The approved private smoke test establishes CLI app-bot eligibility and durable acknowledgement, not worker SDK credential provisioning, external reminder eligibility or access to the management group.
+
+## Delivery status and reconciliation
+
+Configure `SQLITE_FILE_PATH`, `LARK_APP_ID`, `SOURCE_CHAT_ID` and `MANAGEMENT_CHAT_ID` for the intended existing ledger. These commands construct no network transport:
+
+```bash
+pnpm delivery status --id <delivery-id>
+pnpm delivery reconcile --id <delivery-id> --decision sent --expected-attempt <number> --operator "Anthony" --reason "Verified exact destination message, sender and report" --message-id <om_message_id>
+pnpm delivery reconcile --id <delivery-id> --decision not-sent --expected-attempt <number> --operator "Anthony" --reason "Evidence establishing that the original request did not send"
+```
+
+Status opens an existing migrated file read-only and reports attempts, retry/lease times, adapter kind, message ID, failure reason, replay deadline and review history. Wrong scope or missing storage blocks the command. Reconciliation opens the existing file with normal migrations and records the decision atomically. It accepts uncertain, failed or expired in-flight deliveries with the current attempt number; active claims, completed deliveries, stale attempts and invalid arguments are blocked.
+
+A `sent` decision requires the actual Lark message ID and leaves the report completed. A `not-sent` decision needs evidence establishing non-delivery, not just an incomplete search or a similar-looking message. It records the operator/reason and permits a later attempt with the original payload/UUID; the command itself sends nothing. If evidence is unresolved, leave the delivery uncertain. Review never resets the earliest attempt time or creates a new UUID to extend replay safety. A correction would need an explicitly labelled new report revision; correction creation is outside this slice.
 
 ## Verification
 
@@ -54,13 +76,13 @@ To target a submission behavior:
 pnpm exec vitest run tests/unit/evaluate-submissions.test.ts -t 'test name'
 ```
 
-`pnpm test:contract` runs the preflight CLI and Lark SDK history/OAuth contract tests. SDK tests exercise a local HTTP server and real temporary credential files; report preparation also uses real SQLite. `pnpm test:integration` runs the file-backed SQLite report tests, including independent-process races. Automated tests use synthetic inputs without live Lark credentials or messages.
+`pnpm test:contract` runs the preflight/operator CLI and Lark SDK history/OAuth/delivery contract tests. SDK tests exercise a local HTTP server and real temporary credential files; report preparation also uses real SQLite. `pnpm test:integration` runs the file-backed SQLite report tests, including independent-process freeze, delivery, crash and retry races. Automated tests use synthetic inputs without live Lark credentials or messages.
 
 ## Database and delivery
 
 The stack uses the official Lark SDK, Drizzle ORM/Kit and local SQLite through `better-sqlite3`. Versioned SQL and Drizzle snapshots under `drizzle/` are tracked. The four business tables cover messages, observations, deliveries and report entries; Drizzle also keeps its migration journal. Connections enable foreign keys, WAL, full synchronous durability and a five-second busy timeout. Preparation uses an immediate write transaction. SQLite files belong on dedicated local storage rather than a shared network volume.
 
-The integration suite verifies new-database creation, reopening and an upgrade from the earlier migration while preserving its text/UUID. Older records lacking audit fields remain readable but cannot send automatically. Production credentials, group access, holiday data, retention, backups and hosting still require validation before activation. No retention or pruning policy is activated in this slice.
+The integration suite verifies new-database creation, reopening and an upgrade from the earlier migration while preserving its text/UUID. The three additive Slice 4 migrations retain retry times, adapter kind and reviewed reconciliation evidence inside `daily_delivery`. Older records lacking audit fields remain readable but cannot send automatically. Production credentials, group access, holiday data, retention, backups and hosting still require validation before activation. No retention or pruning policy is activated in this slice.
 
 Generate changes with `pnpm db:generate`, review and commit the generated SQL/snapshot, then apply reviewed migrations to isolated local storage. For the manual migration command, create the database directory first and set `SQLITE_FILE_PATH` for the intended file. The ledger constructor also applies the packaged migrations on opening. Review and migration rollout must precede any authorized production launch; do not use schema push against production.
 

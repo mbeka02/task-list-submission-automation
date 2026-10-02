@@ -1,0 +1,1 @@
+ALTER TABLE `daily_delivery` ADD `reconciliations` text DEFAULT '[]' NOT NULL;

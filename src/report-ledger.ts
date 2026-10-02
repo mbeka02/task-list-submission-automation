@@ -15,6 +15,7 @@ import {
   observations,
   reportEntries,
 } from "./storage/schema.js";
+import { requiresRestoreReview } from "./storage-recovery.js";
 
 /** Accessible history coverage for one business date, not an atomic snapshot or full edit history. */
 export interface CompleteScan {
@@ -577,6 +578,8 @@ export function openReportLedger(options: LedgerOptions) {
     now: number;
     deliveryDeadlineMs?: number;
   }) {
+    if (requiresRestoreReview(options.databasePath))
+      return { status: "not_sent" as const, reason: "restore_review_required" };
     let delivery = getDelivery(input.deliveryId);
     // A crashed worker may have reached Lark before losing its acknowledgement.
     if (

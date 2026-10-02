@@ -47,14 +47,36 @@ function run() {
     throw new Error("missing_ledger_configuration");
   // Require an existing regular file so recovery cannot silently create a new, empty ledger.
   if (!lstatSync(databasePath).isFile()) throw new Error("ledger_unavailable");
-  const ledger = openReportLedger({
+  const scope = {
     databasePath,
     appId,
     sourceChatId,
-    destinationChatId,
     readOnly: action === "status",
-  });
+  };
+  const destinations = new Set([destinationChatId, sourceChatId]);
+  const opened: ReturnType<typeof openReportLedger>[] = [];
   try {
+    /** Resolve IDs only in the configured report/reminder scopes, never an arbitrary destination. */
+    function findDelivery() {
+      for (const destination of destinations) {
+        const ledger = openReportLedger({
+          ...scope,
+          destinationChatId: destination,
+        });
+        opened.push(ledger);
+        const delivery = ledger.getDelivery(values.get("--id") ?? "");
+        if (
+          delivery &&
+          ((delivery.kind === "report" && destination === destinationChatId) ||
+            (delivery.kind === "reminder" && destination === sourceChatId))
+        )
+          return { ledger, delivery };
+      }
+      return null;
+    }
+    const selected = findDelivery();
+    if (!selected) throw new Error("delivery_not_found");
+    const { ledger, delivery } = selected;
     if (action === "reconcile") {
       const decision = values.get("--decision");
       const expected = values.get("--expected-attempt");
@@ -78,8 +100,6 @@ function run() {
       });
     }
     // Status omits report content and source evidence; reading it never advances delivery state.
-    const delivery = ledger.getDelivery(values.get("--id") ?? "");
-    if (!delivery) throw new Error("delivery_not_found");
     return {
       status: "ok",
       delivery: {
@@ -109,6 +129,9 @@ function run() {
             (delivery.adapterKind !== "lark_app_api" ||
               delivery.firstAttemptMs === null ||
               Date.now() >= delivery.firstAttemptMs + 55 * 60_000 ||
+              (delivery.kind === "reminder" &&
+                Date.now() >=
+                  Date.parse(`${delivery.businessDate}T10:00:00.000+03:00`)) ||
               delivery.nextAttemptMs === null)) ||
           (delivery.state === "sending" &&
             delivery.claimExpiresMs !== null &&
@@ -116,7 +139,7 @@ function run() {
       },
     };
   } finally {
-    ledger.close();
+    for (const ledger of opened) ledger.close();
   }
 }
 try {

@@ -87,7 +87,7 @@ test("preflight rejects an ambiguous outbound setting", () => {
   expect(result.stderr).toContain("ENABLE_OUTBOUND must be true or false");
 });
 
-test("preflight keeps production sending unavailable before the delivery implementation", () => {
+test("preflight keeps outbound activation disabled after local implementation", () => {
   const result = spawnSync(process.execPath, ["--import", "tsx", entrypoint], {
     cwd: fileURLToPath(new URL("../..", import.meta.url)),
     env: {
@@ -99,5 +99,5 @@ test("preflight keeps production sending unavailable before the delivery impleme
   });
 
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain("Outbound delivery is not implemented");
+  expect(result.stderr).toContain("Outbound activation is disabled");
 });

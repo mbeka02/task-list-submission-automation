@@ -17,7 +17,7 @@ try {
     throw new Error(
       mode === "preview"
         ? "ENABLE_OUTBOUND must be false in preview mode"
-        : "Outbound delivery is not implemented; keep ENABLE_OUTBOUND=false",
+        : "Outbound activation is disabled; keep ENABLE_OUTBOUND=false",
     );
   }
   const result = drizzle(sqlite).get<{ value: number }>(sql`select 1 as value`);

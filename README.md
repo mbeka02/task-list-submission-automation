@@ -1,130 +1,307 @@
-# Task-list submission automation
+# DB Studio task-list automation
 
-A TypeScript worker for compiling daily Lark task-list submitters using Nairobi time. The planned workflow includes a 09:30 reminder and a report after the inclusive 10:00 cutoff, Monday–Friday excluding Kenyan public holidays.
+A TypeScript worker that identifies who posted a daily task list in Lark and prepares a management report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
 
-Phase 0 and Slices 1–5 are implemented locally: offline preflight, submission evaluation, durable report/evidence storage, the real Lark SDK history reader with saved user OAuth renewal, scoped app-bot delivery, safe retries, operator reconciliation and reminder/report due checks. One explicitly approved private-group test confirmed live app-bot sending through the existing CLI. Worker commands keep sending disabled; worker SDK credentials, production destination access and deployment acceptance remain activation gates.
+**Release status:** local development, preview and Docker acceptance are supported. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. Production access, worker OAuth provisioning, live acceptance and deployment remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
 
-Phase 6 adds a tested local Docker release and consistent SQLite backup/isolated restore. Server deployment and live acceptance are deferred: the server is down and management access is pending. See the [operator runbook](RUNBOOK.md) for build, container tests, preview operation, backup/restore and rollback.
+## Table of contents
 
-## Setup
+- [Project overview](#project-overview)
+- [System design](#system-design)
+  - [Architecture](#architecture)
+  - [How the workflow runs](#how-the-workflow-runs)
+  - [Delivery and recovery](#delivery-and-recovery)
+- [Database design](#database-design)
+  - [Tables](#tables)
+  - [Entity relationships](#entity-relationships)
+  - [Constraints and durability](#constraints-and-durability)
+- [Tech stack](#tech-stack)
+- [Installation and setup](#installation-and-setup)
+- [Usage and operations](#usage-and-operations)
+- [Development and verification](#development-and-verification)
+- [Code map](#code-map)
 
-Use nvm with the pinned Node version and pnpm 12.6.0:
+## Project overview
+
+The workflow replaces manually checking **DB STUDIO EXTERNAL** and compiling the names of people who submitted their task lists. The management report contains a dated, numbered list of distinct submitters; it does not summarise their tasks or determine who failed to submit from an employee roster.
+
+| When, in `Africa/Nairobi` (UTC+3) | Work |
+| --- | --- |
+| Monday–Friday, excluding reviewed Kenyan public holidays | Eligible working days |
+| 09:30 to just before 10:00 | Prepare the reminder for the source group; allow same-day catch-up |
+| At or after 10:00 | Read that day's messages originally sent from midnight through **10:00 inclusive**, then freeze the management report |
+| Startup and after each completed check | Recover today's unfinished work; default delay is 60 seconds |
+
+Only supported text and rich-text task lists posted in the main conversation count. Thread replies are excluded in v1. The reader uses the latest content it observes during compilation; it does not reconstruct what an edited message looked like exactly at 10:00.
+
+The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
+
+## System design
+
+One Node.js worker coordinates the workflow and stores its ledger in a dedicated SQLite file. It makes outbound API requests; there is no inbound HTTP API, web framework, Redis or separate database server.
+
+### Architecture
+
+```mermaid
+%%{init: {"theme":"base","fontFamily":"sans-serif","themeVariables":{"fontFamily":"sans-serif","fontSize":"15px","lineColor":"#64748b","primaryTextColor":"#0f172a","edgeLabelBackground":"#f8fafc"},"flowchart":{"curve":"linear","nodeSpacing":40,"rankSpacing":45}}}%%
+flowchart TB
+    CONFIG["Reviewed configuration<br/>App / groups / calendar / policy"]:::config
+    SCHEDULE["Due-work scheduler<br/>Startup + periodic checks"]:::worker
+    SOURCE["Lark source group<br/>DB STUDIO EXTERNAL"]:::lark
+    READER["Paginated history reader<br/>Approved account · user OAuth"]:::worker
+    EVALUATE["Submission evaluator<br/>Classify · resolve names · deduplicate"]:::worker
+    FREEZE["Report / reminder preparation<br/>Commit frozen text + UUID"]:::worker
+    LEDGER[("SQLite ledger<br/>Evidence · reports · delivery state")]:::storage
+    DELIVERY["Delivery coordinator<br/>Claims · retries · reconciliation"]:::worker
+    BOT["Lark app-bot adapter<br/>Available; CLI sending disabled"]:::outbound
+    TARGETS["Lark destinations<br/>Source: reminder · Management: report"]:::lark
+
+    CONFIG --> SCHEDULE
+    SCHEDULE -->|10:00 report due| READER
+    SOURCE -->|Read all history pages| READER
+    READER --> EVALUATE
+    EVALUATE --> FREEZE
+    SCHEDULE -->|09:30 reminder; no history read| FREEZE
+    FREEZE --> LEDGER
+    LEDGER -->|Load saved delivery| DELIVERY
+    DELIVERY -.->|Requires outbound activation| BOT
+    BOT -.-> TARGETS
+
+    classDef config fill:#fef3c7,stroke:#b45309,color:#78350f,stroke-width:2px;
+    classDef lark fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px;
+    classDef worker fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
+    classDef storage fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px;
+    classDef outbound fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px;
+```
+
+**Legend:** blue = Lark groups; green = worker modules; purple = persistent storage; amber = configuration; orange = outbound adapter. Dashed arrows require future activation. The coordinator records outcomes back into SQLite; that return path is omitted to keep the diagram readable.
+
+History reads use the approved user's access because the source is an external group. Sending uses the approved app bot and explicit destination scope. Both stay bound to the same app ID; neither falls back to another account or group.
+
+### How the workflow runs
+
+1. **Check what is due.** Validate the Nairobi date, activation date and reviewed calendar. Prepare the reminder during its window without reading submissions. At 10:00, begin report compilation if no report is already frozen.
+2. **Read every page.** Fetch the source group's midnight–10:00 history using user OAuth. Preserve message IDs, sender metadata, timestamps and supported content. Partial, denied or failed reads block compilation rather than producing an empty report.
+3. **Decide who qualifies.** Normalize text/rich-text content, classify task lists, exclude late/deleted/ineligible posts and deduplicate people by `(app_id, sender_tenant_key, sender_open_id)`. Names are display data. Ambiguous candidates or unresolved qualifying names require review.
+4. **Freeze a consistent report.** In one SQLite write transaction, save relevant observed evidence, the selected entries, exact report text, policy version and a stable send UUID. Either the whole report is committed or none of it is. An existing frozen report is reused; a complete, valid empty scan produces explicit zero-submission text.
+5. **Deliver saved work when activated.** Claim one eligible delivery in SQLite, commit the claim, then make the Lark request outside the transaction. Record the acknowledgement or recovery state. Subsequent attempts use the saved text and UUID, without rereading or recompiling the report.
+
+The 60-second interval is a **due-work check**, not continuous submission polling. A normal run completes one history scan per report date; blocked/incomplete scans can be retried. Restarting recovers today's work. Older missed reports are shown for reviewed backfill rather than sent automatically.
+
+### Delivery and recovery
+
+| State | Meaning |
+| --- | --- |
+| `pending` | Frozen and awaiting an attempt |
+| `sending` | A worker has claimed the attempt with a bounded lease |
+| `sent` | Lark acknowledgement or an evidenced operator decision is saved |
+| `retryable` | A definite temporary rejection; retry after persisted backoff |
+| `uncertain` | The request may have sent, or an acknowledgement could not be saved |
+| `failed` | A permanent failure requiring review |
+
+Unique delivery keys and guarded claims prevent competing workers from freely sending the same report. An expired claim becomes uncertain. The app API adapter can replay an uncertain request only within 55 minutes of the earliest attempt, using the original UUID within Lark's [documented one-hour deduplication window](https://open.larksuite.com/document/server-docs/im-v1/message/create). This reduces duplicate risk; it does not guarantee exactly-once delivery.
+
+Reminder attempts stop at 10:00; automatic report attempts stop at the next Nairobi midnight. Outside safe retry windows, inspect and reconcile through the [runbook](RUNBOOK.md#inspect-and-recover-ordinary-work). Restored storage stays paused for review.
+
+## Database design
+
+The ledger has **four business tables** plus Drizzle's migration journal. [The Drizzle schema](src/storage/schema.ts) and [versioned SQL migrations](drizzle/) define the physical schema. JSON values are stored as SQLite `TEXT`; timestamps ending in `Ms` are epoch milliseconds.
+
+### Tables
+
+| Table | Purpose | Stored fields |
+| --- | --- | --- |
+| `message` | Identify a source message and its latest known lifecycle state | `id`, `appId`, `sourceChatId`, `sourceMessageId`, JSON `senderIdentity`, `createdMs`, `updatedMs`, `deleted` |
+| `message_observation` | Preserve an immutable version the worker actually observed | `id`, `messageKey`, `fingerprint`, JSON `payload` with source content, normalized text, observation time and detector provenance |
+| `daily_delivery` | Freeze one report or reminder and track its delivery/recovery | Identity/scope: `id`, `appId`, `businessDate`, `sourceChatId`, `destinationChatId`, `kind`, `revision`; frozen content: `policyVersion`, `text`, `sendUuid`, `timeZone`, `cutoffMs`, `textHash`; lifecycle: `state`, `messageId`, `attemptCount`, `firstAttemptMs`, `nextAttemptMs`, `adapterKind`, `claimToken`, `claimExpiresMs`, `acknowledgedMs`, `lastError`, JSON `reconciliations` |
+| `report_entry` | Snapshot each distinct submitter and the exact evidence used in a report | `deliveryId`, `position`, JSON `payload` with identity/name/evidence, `observationKey`, `senderIdentityKey` |
+
+A reminder has a `daily_delivery` record and no report entries. A zero-submission report also has no entries. Later name changes or message edits do not alter a frozen report. Observations are evidence captured by this worker, not a complete Lark edit history. Ordinary unrelated group posts are not stored as new business records.
+
+### Entity relationships
+
+```mermaid
+%%{init: {"theme":"base","fontFamily":"sans-serif","themeVariables":{"fontFamily":"sans-serif","fontSize":"14px","primaryTextColor":"#0f172a","lineColor":"#64748b","tertiaryColor":"#f8fafc"},"er":{"layoutDirection":"TB","entityPadding":14}}}%%
+erDiagram
+    direction TB
+    message ||..o{ message_observation : "has observed versions"
+    message_observation o|..o{ report_entry : "supports frozen entries"
+    daily_delivery ||--o{ report_entry : "contains submitters"
+
+    message {
+        TEXT id PK
+        TEXT appId
+        TEXT sourceMessageId
+        TEXT senderIdentity "JSON"
+        INTEGER createdMs
+        INTEGER deleted "boolean"
+    }
+    message_observation {
+        TEXT id PK
+        TEXT messageKey FK
+        TEXT fingerprint
+        TEXT payload "JSON evidence"
+    }
+    daily_delivery {
+        TEXT id PK
+        TEXT businessDate
+        TEXT kind "report or reminder"
+        TEXT text "frozen content"
+        TEXT sendUuid UK
+        TEXT state
+        INTEGER attemptCount
+    }
+    report_entry {
+        TEXT deliveryId PK, FK
+        INTEGER position PK
+        TEXT observationKey FK "nullable"
+        TEXT senderIdentityKey
+        TEXT payload "JSON snapshot"
+    }
+
+    classDef source fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px;
+    classDef evidence fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
+    classDef delivery fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px;
+    classDef entry fill:#fef3c7,stroke:#b45309,color:#78350f,stroke-width:2px;
+    class message source
+    class message_observation evidence
+    class daily_delivery delivery
+    class report_entry entry
+```
+
+The ERD shows selected columns; the table above lists the full schema. `PK` = primary key, `FK` = foreign key, `UK` = unique key; a circle means optional and a crow's foot means many. Entry positions form a composite primary key with `deliveryId`. New report entries link to one observation; that link remains nullable to support older records. Colours distinguish source messages (blue), observations (green), deliveries (purple) and report entries (amber).
+
+### Constraints and durability
+
+| Database rule | What it protects |
+| --- | --- |
+| Primary key `id` on `message`, `message_observation` and `daily_delivery` | A stable identifier for each record |
+| `message_app_source_id`: unique `(appId, sourceMessageId)` | One source message per app scope |
+| `observation_message_version`: unique `(messageKey, fingerprint)` | No duplicate observed version for a message |
+| `delivery_business_key`: unique `(appId, businessDate, sourceChatId, destinationChatId, kind, revision)` | One frozen delivery per business scope/kind/revision |
+| `delivery_send_uuid`: unique `sendUuid` | A distinct persisted UUID for each delivery |
+| `report_entry` primary key `(deliveryId, position)` | One entry at each report position |
+| `report_distinct_sender`: unique `(deliveryId, senderIdentityKey)` | No repeated non-null sender identity within one report |
+| Foreign keys: observation → message; entry → delivery; entry → observation (nullable) | Referenced records must exist; deletions do not cascade |
+
+SQLite enforces primary keys, unique indexes, `NOT NULL` columns and enabled foreign keys. State values, JSON shapes, calendar rules, scope checks and safe lifecycle transitions are validated by the application; Drizzle's TypeScript enums do **not** create SQL `CHECK` constraints. Nullable evidence/audit columns preserve migration compatibility; incomplete legacy records cannot automatically send.
+
+Connections use WAL, `synchronous=FULL` and a five-second busy timeout. Report freezing uses an immediate transaction; network calls never hold that transaction open. Keep SQLite on dedicated local persistent storage. Review generated migrations before applying them; use the [online backup and isolated restore procedure](RUNBOOK.md#back-up-and-rehearse-restore) rather than copying an active database file.
+
+## Tech stack
+
+| Component | Choice | Purpose |
+| --- | --- | --- |
+| Runtime | Node.js **24.21.0**, TypeScript, native ES modules | Worker and operator commands |
+| Package manager | pnpm **12.6.0** | Reproducible installs from the lockfile |
+| Lark integration | Official `@larksuiteoapi/node-sdk` | User OAuth history reads and app-bot sending adapter |
+| Persistence | SQLite via `better-sqlite3` | Local durable ledger |
+| Database tooling | Drizzle ORM + Drizzle Kit | Typed queries and versioned SQL migrations |
+| Verification | Vitest | Unit, HTTP contract, SQLite integration and container acceptance tests |
+| Formatting / linting | Biome | Code checks |
+| Packaging | Docker + Docker Compose | Non-root local release with persistent volumes |
+
+Exact dependency versions are pinned in [package.json](package.json) and [pnpm-lock.yaml](pnpm-lock.yaml). The scheduler is application code; n8n and the server's existing PostgreSQL containers are not required.
+
+## Installation and setup
+
+### Local development
+
+Use nvm and pnpm at the pinned versions. Native SQLite may require Python, `make` and a C/C++ compiler if a compatible prebuilt binding is unavailable.
+
+From the repository root:
 
 ```bash
 nvm install
 nvm use
 pnpm install --frozen-lockfile
 cp .env.example .env
+chmod 600 .env
 pnpm preflight
 ```
 
-The project pins Node 24.21.0. `better-sqlite3` may need Python, make and a C/C++ compiler to build its native binding. Dependency build scripts are enabled only for `better-sqlite3` and `esbuild`.
+Preflight checks a real in-memory SQLite/Drizzle query and SDK client construction. It makes no network requests and does not create the business ledger. It checks local compatibility, not live credentials or group access.
 
-## Implemented capabilities
+### Configure a preview worker
 
-`pnpm preflight` loads `.env` when present and defaults to preview mode with outbound delivery disabled. It checks a real in-memory SQLite/Drizzle query and constructs a Lark-domain SDK client using dummy credentials. It makes no network requests or persistent business database. Every mode currently rejects outbound delivery.
+[.env.example](.env.example) lists the settings. Keep real configuration and credentials out of Git.
 
-`evaluateSubmissions({ businessDate, policy, messages })` in `src/evaluate-submissions.ts` evaluates current canonical observations. It recognizes supported text/rich-text task lists, applies the Nairobi date/cutoff and supplied holiday calendar, resolves platform names, deduplicates scoped sender identities and explains exclusion/review decisions. Unconfirmed task replies require review. A `ready` result establishes detector readiness; complete retrieval and approved publication policy remain separate requirements.
+| Setting | Required configuration |
+| --- | --- |
+| `APP_MODE`, `ENABLE_OUTBOUND` | Keep `preview` and `false` |
+| `BUSINESS_TIMEZONE` | `Africa/Nairobi` |
+| `SQLITE_FILE_PATH` | Dedicated local preview ledger; parent directory must exist |
+| `LARK_APP_ID`, `SOURCE_CHAT_ID`, `MANAGEMENT_CHAT_ID` | Approved app/group scope; the supplied management ID is a placeholder |
+| `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by `worker run`; separate worker user-OAuth grant under the approved app/account |
+| `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
+| `WORKER_CHECK_INTERVAL_MS` | Delay after each completed check; default `60000` |
+| `WORKER_RESTORE_MODE` | Pause work during recovery; a persistent restore marker also enforces the pause |
 
-`createSubmissionHistoryReader(options)` in `src/submission-history.ts` exposes `readSubmissionHistory({ businessDate, sourceChatId, replyPolicy })`. The selected route uses user OAuth under one approved app and source group. V1 counts main conversation posts only (`replyPolicy: "exclude"`); including thread replies returns an unsupported-policy outcome. Reads start at/after the inclusive 10:00 cutoff, retrieve all pages for Nairobi midnight–10:00, and preserve current text/post content, sender identity/names, raw millisecond timestamps, recalls, forwarding markers and per-page observation times. Overlapping pages select the latest version without masking conflicts. A complete read feeds `prepareDailyReport`; partial, malformed, denied, rate-limited or unavailable reads cannot freeze an empty report.
+No approved annual holiday dataset or initial worker OAuth login command is bundled. The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
 
-Reader options require `appId`, `appSecret`, `sourceChatId` and either a trusted external `getUserAccessToken()` supplier or `credentialFile` plus the approved account's app-scoped `readerOpenId`. The supplier returns `{ appId, accessToken, expiresAtMs }` and is checked on every page. `maxPages` defaults to 100 and accepts 1–100; reaching it with remaining pages blocks completion. The default HTTP transport has a 15-second timeout, no redirects and a 10 MiB response limit. `credentialTimeoutMs` defaults to 15 seconds and can be lowered. There is no automatic retry loop or background polling in this module; an injected transport must also enforce its own HTTP timeout.
+For Docker builds, acceptance, volume preparation and startup, follow the [runbook](RUNBOOK.md#build-and-exercise-the-local-image). The supplied Compose package is offline, publishes no ports and forces sending off. A due report that needs Lark remains blocked offline.
 
-File-based renewal uses the pinned SDK OAuth endpoint, saves refresh intent before networking, and atomically saves replacement tokens before history reads. An exclusive file lock prevents competing renewals. Expired refresh grants, revocation and uncertain/interrupted renewals require operator action; no old refresh key is replayed automatically after uncertainty. A crash can leave a lock and `refreshing` state: stop the worker and reauthorize through the future reviewed recovery procedure rather than deleting state and retrying blindly. Credentials require a worker-owned private directory (0700) and regular file (0600), stored on local persistent storage; symlinks and access by other users are rejected. This file contains secrets and must stay under ignored `data/` or outside the repository.
+## Usage and operations
 
-The initial file format is JSON: `version: 1`, `state: "ready"`, `appId`, `readerOpenId`, `accessToken`, `expiresAtMs`, `refreshToken`, and `refreshExpiresAtMs`. Both expiries are absolute epoch milliseconds derived from the actual authorization response. Provision a separate OAuth grant for the worker under the currently approved app/account; sharing and rotating the CLI session's refresh token could interfere with the CLI. Initial login and recovery commands are not implemented yet. A bounded read-only CLI check confirmed external-group access and response shape; fixture tests prove local SDK behavior, not live worker renewal or least-privilege permissions.
-
-`openReportLedger(options)` in `src/report-ledger.ts` opens a dedicated SQLite file and applies the packaged migrations. It exposes report/reminder preparation, scoped delivery inspection/date-range discovery, `deliverDelivery({ deliveryId, now, deliveryDeadlineMs? })`, reviewed reconciliation and `close()`. Configuration binds one app/source/destination; no transport is supplied by default and no production adapter is connected.
-
-Preparation requires a complete appropriately bounded scan and explicit reply policy. It preserves candidate observations and freezes distinct names, exact text, source evidence, policy version and a stable UUID in one transaction. Repeated preparation keeps the frozen report. Incomplete/ambiguous/conflicting evidence blocks freezing; a genuinely successful empty scan produces explicit zero-submission text. Ordinary unrelated posts are not retained as new business records.
-
-Delivery atomically claims an eligible report, commits the claim, sends its persisted text/UUID outside the transaction and records the acknowledgement. Other claimants and acknowledged reports do not send. A definitive temporary rejection becomes `retryable`; permission/bot/credential rejection becomes `failed`; lost responses or acknowledgement writes remain `uncertain`. Expired claims recover as uncertain rather than resetting to pending. Claim tokens and attempt numbers fence competing workers and stale operator decisions.
-
-Retry eligibility is saved in SQLite. Definitive rejections use backoff from response completion, starting at 30 seconds and increasing to a 15-minute cap; a longer supplied retry delay is respected. Each `deliverDelivery` call makes at most one attempt. The worker supplies later due checks; retries preserve the original text, UUID and earliest attempt time.
-
-`createLarkDeliveryTransport(options)` in `src/lark-delivery.ts` supplies the real SDK app-bot adapter: fixed `appId`/`appSecret`, `allowedDestinationChatIds`, Lark domain and tenant credentials. It obtains a tenant token explicitly and sends text with `receive_id_type=chat_id`; it never falls back to a user or another destination. Known rejection codes are sanitized into outcomes; malformed responses, in-progress responses, timeouts and ambiguous server failures remain uncertain. Its default HTTP timeout is 15 seconds per request with redirects disabled; an injected HTTP instance must enforce its own timeout. SDK logs are suppressed to keep credentials and request bodies out of diagnostics.
-
-Only attempts recorded as the app API may automatically replay an uncertain request, and only before 55 minutes from the earliest saved attempt. This reserves five minutes inside [Lark's documented one-hour UUID window](https://open.larksuite.com/document/server-docs/im-v1/message/create). Both the UUID deadline and the 60-second claim lease are checked again after obtaining credentials; the latest message POST start leaves 15 seconds inside the lease. An unverified adapter cannot inherit this guarantee by later switching to the app API. Rejected replays cannot erase earlier uncertainty. Outside the window, or after a deadline/permanent replay problem, operator review is required. These bounds reduce duplicate risk; they do not promise exactly-once delivery.
-
-Worker commands and preflight reject `ENABLE_OUTBOUND=true`. The approved private smoke test establishes CLI app-bot eligibility and durable acknowledgement; worker SDK credentials, external reminder eligibility and management access remain unproven.
-
-## Reminder and scheduled recovery
-
-`createDueWorker(options)` in `src/due-worker.ts` exposes `runDueWork({ now })`, read-only `getStatus({ now })` and `close()`. It uses the real history reader and two ledger scopes in one SQLite file: reminders target the source group, reports target management. The existing four business tables and migrations support both kinds; no new migration is needed.
-
-On Monday–Friday excluding supplied Kenyan public holidays, the reminder window is **09:30 inclusive to 10:00 exclusive** in Nairobi. Its approved text is “Please post today's task list in this group by 10:00 AM Nairobi time.” A reminder needs no history read and freezes its own text/UUID without report entries. At **10:00**, the report reads that day's history, freezes it and attempts delivery independently. A normal single-worker run completes one compilation read per eligible date; incomplete or blocked reads can be retried. Saved reports bypass history on delivery retries. Separate processes can read the same unfrozen date, while SQLite uniqueness and claims protect the frozen delivery.
-
-Startup and later checks recover today's unfinished work. Older unfinished reports appear under `backfill`, with delivery IDs and states where a frozen record exists; calendar revisions cannot hide those records. Old uncertain/failed reminders remain under `reminderReviews`. Neither is automatically replayed. Lists show at most 31 items with total/truncation metadata. Reminder retries stop at 10:00, and automatic report publication stops at the next Nairobi midnight. The app adapter rechecks these deadlines after credentials. A read crossing midnight can retain a frozen report for reviewed backfill. Uncertainty still follows S4's UUID/claim rules.
-
-Configure the fields in `.env.example`, create the database's parent directory, and supply a reviewed calendar before running:
+After configuring the preview and creating its database directory:
 
 ```bash
-pnpm worker status
 pnpm worker run --once
+pnpm worker status
 pnpm worker run
 ```
 
-`status` requires an existing migrated ledger and opens it read-only; it needs no SDK credentials and contacts no Lark endpoint. `run` additionally requires the app secret, approved reader open ID and separate worker OAuth-file path. It may read Lark after cutoff and freeze local preview work, but installs no outbound transport. Use an isolated preview database. `run --once` performs one check; continuous `run` checks at startup, then waits `WORKER_CHECK_INTERVAL_MS` after each completed check (default 60000; accepted range 1000–3600000). Checks never overlap. It prints changed state, keeps unchanged checks quiet, and waits for an active check before closing on SIGINT/SIGTERM.
+`run --once` performs one due check; `run` checks at startup and then waits the configured interval after each check. They may read Lark and freeze preview records, but do not send. The ledger opens with packaged migrations. `status` needs an existing migrated ledger and reviewed calendar/scope configuration, but no SDK credentials or Lark connection.
 
-Calendar JSON uses `version`, `fromDate`, `throughDate`, `reviewedOn`, `sourceUrls` (HTTPS references) and `publicHolidays` (real `YYYY-MM-DD` dates). Coverage must include activation through today; future review dates, malformed dates and missing provenance block work. Metadata validation cannot prove official annual completeness. Keep the actual maintained dataset under ignored `data/`; no approved annual Kenyan calendar is bundled. Refresh the reviewed configuration and restart when coverage changes.
-
-`WORKER_RESTORE_MODE=true` pauses reads, freezing and outbound attempts while keeping review status visible. `pnpm storage restore` also creates a persistent review marker beside the restored database; worker checks and direct delivery calls respect it even if the environment flag is false. Manual file replacement cannot be detected automatically. Reviewed release of restored state remains part of future activation. Recent read/preparation failure reasons are visible in the running worker and its JSON output; a separate status process reconstructs durable delivery state rather than that transient read diagnostic.
-
-## Local release and storage recovery
-
-```bash
-pnpm release:build
-pnpm test:release
-pnpm storage backup --output ./backups/new-snapshot.sqlite
-pnpm storage restore --backup ./backups/new-snapshot.sqlite --output ./data/isolated-restore.sqlite
-```
-
-Build/test require local Docker access. Container acceptance uses synthetic records, an external test clock, isolated temporary volumes and disabled networking. Ordinary `pnpm test` skips Docker acceptance; `pnpm test:release` enables it. Optional rollback acceptance uses `RELEASE_PREVIOUS_IMAGE=<built-previous-image>`. The supplied Compose file is offline, uses dedicated ledger/credential volumes, runs as a non-root user and forces sending off; it publishes no ports and is not started by these commands.
-
-Storage commands need existing private destination directories. Backup uses SQLite's online backup API and validates integrity, foreign keys and the exact current migration history without migrating. Complete snapshots are published atomically with private permissions; existing destination files, SQLite sidecars and restore markers are refused. Restore requires a new isolated filename and remains paused for review. No restore-release command, off-server backup schedule or production retention policy is configured by this local release. Database backup does not include rotating OAuth grants or configuration.
-
-## Delivery status and reconciliation
-
-Configure `SQLITE_FILE_PATH`, `LARK_APP_ID`, `SOURCE_CHAT_ID` and `MANAGEMENT_CHAT_ID` for the intended existing ledger. These commands construct no network transport:
+Inspect a frozen delivery locally:
 
 ```bash
 pnpm delivery status --id <delivery-id>
-pnpm delivery reconcile --id <delivery-id> --decision sent --expected-attempt <number> --operator "Anthony" --reason "Verified exact destination message, sender and report" --message-id <om_message_id>
-pnpm delivery reconcile --id <delivery-id> --decision not-sent --expected-attempt <number> --operator "Anthony" --reason "Evidence establishing that the original request did not send"
 ```
 
-The same commands resolve report IDs only in the configured management scope and reminder IDs only in the configured source scope. Status opens the migrated file read-only and reports attempts, retry/lease times, adapter kind, message ID, failure reason, replay deadline and review history. Wrong scope or missing storage blocks the command. Reconciliation records a decision atomically. It accepts uncertain, failed or expired in-flight deliveries with the current attempt number; active claims, completed deliveries, stale attempts and invalid arguments are blocked.
+| Operation | Guide |
+| --- | --- |
+| Inspect work and reconcile an uncertain delivery | [Delivery review](RUNBOOK.md#inspect-and-recover-ordinary-work) |
+| Take a consistent backup or rehearse an isolated restore | [Backup and restore](RUNBOOK.md#back-up-and-rehearse-restore) |
+| Stop, replace or roll back the container | [Release recovery](RUNBOOK.md#stop-replace-and-roll-back) |
+| Validate access and prepare future activation | [Deferred live acceptance](RUNBOOK.md#deferred-live-acceptance) |
 
-A `sent` decision requires the actual Lark message ID and leaves the report completed. A `not-sent` decision needs evidence establishing non-delivery, not just an incomplete search or a similar-looking message. It records the operator/reason and permits a later attempt with the original payload/UUID; the command itself sends nothing. If evidence is unresolved, leave the delivery uncertain. Review never resets the earliest attempt time or creates a new UUID to extend replay safety. A correction would need an explicitly labelled new report revision; correction creation is outside this slice.
+Unresolved reads or candidates are not valid zero-submission days. Leave uncertain sends unresolved until evidence supports a decision; reconciliation itself never sends. Retention/pruning, off-server backup scheduling, restore release and production activation are not configured. The manual management list remains the fallback.
 
-## Verification
+## Development and verification
 
 ```bash
 pnpm test
 pnpm typecheck
 pnpm lint
 pnpm build
-node dist/preflight.js
 ```
 
-To target a submission behavior:
+Focused checks:
 
 ```bash
-pnpm exec vitest run tests/unit/evaluate-submissions.test.ts -t 'test name'
+pnpm test:contract
+pnpm test:integration
+pnpm release:build
+pnpm test:release
 ```
 
-`pnpm test:contract` runs the preflight/operator CLI and Lark SDK history/OAuth/delivery contract tests. SDK tests exercise a local HTTP server and real temporary credential files; report preparation also uses real SQLite. `pnpm test:integration` runs the file-backed SQLite report tests, including independent-process freeze, delivery, crash and retry races. Automated tests use synthetic inputs without live Lark credentials or messages.
+Tests use synthetic data, temporary real SQLite files and controlled HTTP fixtures; they need no live Lark credentials or messages. Docker acceptance requires local Docker access and runs separately from the ordinary suite. See the [runbook](RUNBOOK.md#build-and-exercise-the-local-image) for optional rollback acceptance.
 
-## Database and delivery
+Generate schema changes with `pnpm db:generate`, review and commit the SQL/snapshot, then migrate isolated storage with `pnpm db:migrate` using the intended `SQLITE_FILE_PATH`. Do not use schema push against production.
 
-The stack uses the official Lark SDK, Drizzle ORM/Kit and local SQLite through `better-sqlite3`. Versioned SQL and Drizzle snapshots under `drizzle/` are tracked. The four business tables cover messages, observations, deliveries and report entries; Drizzle also keeps its migration journal. Connections enable foreign keys, WAL, full synchronous durability and a five-second busy timeout. Preparation uses an immediate write transaction. SQLite files belong on dedicated local storage rather than a shared network volume.
+Each phase/slice starts on its own branch from current `main`. Use coherent, purpose-focused commits and merge after review. Local plans, design specs, research, dependencies, build output, databases, backups and secrets are intentionally ignored; the README, runbook, migrations and sanitized environment template are tracked.
 
-The integration suite verifies new-database creation, reopening and an upgrade from the earlier migration while preserving its text/UUID. The three additive Slice 4 migrations retain retry times, adapter kind and reviewed reconciliation evidence inside `daily_delivery`. Older records lacking audit fields remain readable but cannot send automatically. Production credentials, group access, holiday data, retention, backups and hosting still require validation before activation. No retention or pruning policy is activated in this slice.
+## Code map
 
-Generate changes with `pnpm db:generate`, review and commit the generated SQL/snapshot, then apply reviewed migrations to isolated local storage. For the manual migration command, create the database directory first and set `SQLITE_FILE_PATH` for the intended file. The ledger constructor also applies the packaged migrations on opening. Review and migration rollout must precede any authorized production launch; do not use schema push against production.
-
-## Git workflow
-
-The initial Phase 0 / Slice 1 baseline is on `main`. Each subsequent phase or slice starts on its own branch from current `main`, for example `codex/slice-2-frozen-report`. Use coherent commits with purpose-focused messages, push the phase/slice branch for review, and merge to `main` after approval.
-
-Local implementation plans, design specs, docs, research and agent state are intentionally ignored. Dependencies, build output, database files, backups and secrets are also ignored. Track the sanitized `.env.example`; keep actual credentials and chat IDs in local environment configuration.
+| File | Responsibility |
+| --- | --- |
+| [src/evaluate-submissions.ts](src/evaluate-submissions.ts) | Task-list classification, names and distinct sender selection |
+| [src/submission-history.ts](src/submission-history.ts) | Paginated, bounded Lark history reads |
+| [src/user-oauth-credentials.ts](src/user-oauth-credentials.ts) | Private saved grants and durable OAuth renewal |
+| [src/report-ledger.ts](src/report-ledger.ts) | Evidence, report freezing, claims, retries and reconciliation |
+| [src/storage/schema.ts](src/storage/schema.ts) | Drizzle table definitions |
+| [src/lark-delivery.ts](src/lark-delivery.ts) | Scoped app-bot HTTP adapter |
+| [src/due-worker.ts](src/due-worker.ts) | Working-day scheduling and recovery decisions |
+| [src/worker-command.ts](src/worker-command.ts), [src/delivery-command.ts](src/delivery-command.ts), [src/storage-command.ts](src/storage-command.ts) | Operator interfaces |
+| [Dockerfile](Dockerfile), [compose.yaml](compose.yaml) | Local image and container configuration |

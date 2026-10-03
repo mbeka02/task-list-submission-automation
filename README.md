@@ -88,6 +88,8 @@ History reads use the approved user's access because the source is an external g
 
 The 60-second interval is a **due-work check**, not continuous submission polling. A normal run completes one history scan per report date; blocked/incomplete scans can be retried. Restarting recovers today's work. Older missed reports are shown for reviewed backfill rather than sent automatically.
 
+A qualifying list needs a heading such as **To Do**, **To-Do List**, **Todo List**, **Task List** or **Do List**, followed by at least one non-empty numbered or bulleted line. Headings are case-insensitive; extra spaces or tabs between “to” and “do,” including around a hyphen, are accepted (for example, `TO  DO LIST` or `To - Do list`). Personal prefixes, possessive names (including a missing apostrophe or a backtick), weekdays, trailing full stops and an English day/month date on the heading line are supported. Item markers include `1.`, `1)`, `1:`, `(1)`, `-`, `*` and `•`; skipped or repeated numbers do not invalidate a list. This checks submission structure, not task quality or completion. Heading names/dates never override the platform sender or send timestamp. Numbered announcements, weekly reports and loose mentions of a to-do list do not qualify; ambiguous candidates remain visible for review.
+
 ### Delivery and recovery
 
 | State | Meaning |

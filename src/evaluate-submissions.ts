@@ -64,25 +64,25 @@ export interface SubmissionDecision {
   normalizedText: string | null;
   outcome: "eligible" | "excluded" | "review";
   reason:
-  | "unapproved_source"
-  | "not_working_day"
-  | "invalid_timestamp"
-  | "outside_business_date"
-  | "after_cutoff"
-  | "deleted"
-  | "non_human_sender"
-  | "not_original_submission"
-  | "unsupported_message_type"
-  | "malformed_content"
-  | "thread_reply_excluded"
-  | "thread_policy_unconfirmed"
-  | "unresolved_identity"
-  | "unresolved_name"
-  | "task_list"
-  | "incomplete_task_list"
-  | "ambiguous_task_heading"
-  | "not_task_list"
-  | "duplicate_sender";
+    | "unapproved_source"
+    | "not_working_day"
+    | "invalid_timestamp"
+    | "outside_business_date"
+    | "after_cutoff"
+    | "deleted"
+    | "non_human_sender"
+    | "not_original_submission"
+    | "unsupported_message_type"
+    | "malformed_content"
+    | "thread_reply_excluded"
+    | "thread_policy_unconfirmed"
+    | "unresolved_identity"
+    | "unresolved_name"
+    | "task_list"
+    | "incomplete_task_list"
+    | "ambiguous_task_heading"
+    | "not_task_list"
+    | "duplicate_sender";
 }
 
 /**
@@ -290,17 +290,25 @@ export function evaluateSubmissions(
     const normalizedText = text
       .normalize("NFKC")
       .replace(/\r\n?/g, "\n")
-      .replace(/[‘’]/g, "'")
+      .replace(/[‘’`]/g, "'")
       .replace(/[‐‑‒–—]/g, "-")
       .trim();
     // Loose mentions need review; a task list requires a heading and a non-empty item.
-    const candidate = /\b(?:to[- ]?do(?:\s+list)?|task\s+list)\b/i.test(
-      normalizedText,
-    );
-    const heading =
-      /^(?:(?:my|our|today's|[\p{L}\p{N} ._-]+'s)\s+)?(?:to[- ]?do(?:\s+list)?|task\s+list)\s*:?[ \t]*(?:\n|$)/iu.test(
+    const candidate =
+      /\b(?:to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list|do\s+list)\b/i.test(
         normalizedText,
       );
+    // Only a heading-shaped opening qualifies; its optional date is display data.
+    const heading = new RegExp(
+      [
+        String.raw`^(?:(?:my|our|today's|[\p{L}\p{N} ._-]+'s|[\p{L}\p{N}._-]+s)\s+)?`,
+        String.raw`(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+)?`,
+        String.raw`(?:to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list|do\s+list)\s*[.:]?`,
+        String.raw`(?:[ \t]+\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?)?`,
+        String.raw`[ \t]*(?:\n|$)`,
+      ].join(""),
+      "iu",
+    ).test(normalizedText);
     const item = /(?:^|\n)[ \t]*(?:\d+[.):]|\(\d+\)|[-*•])[ \t]*\S/.test(
       normalizedText,
     );

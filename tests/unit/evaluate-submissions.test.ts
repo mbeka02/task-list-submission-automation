@@ -40,6 +40,139 @@ function evaluate(
   });
 }
 
+test.each(["TO   DO LIST", "to  do List", "To\tDo list", "to  do"])(
+  "extra horizontal spacing still qualifies as a task-list heading: %s",
+  (heading) => {
+    const result = evaluate([
+      {
+        ...message,
+        content: JSON.stringify({ text: `${heading}\n1. Review the report` }),
+      },
+    ]);
+    expect(result.status).toBe("ready");
+    expect(result.decisions[0]?.reason).toBe("task_list");
+    expect(result.entries).toHaveLength(1);
+  },
+);
+
+test.each(["To  -  Do list", "TO -DO LIST", "to- do List", "To - Do"])(
+  "horizontal spacing around the hyphen still qualifies as a heading: %s",
+  (heading) => {
+    const result = evaluate([
+      {
+        ...message,
+        content: JSON.stringify({ text: `${heading}\n- Review the report` }),
+      },
+    ]);
+    expect(result.status).toBe("ready");
+    expect(result.decisions[0]?.reason).toBe("task_list");
+    expect(result.entries).toHaveLength(1);
+  },
+);
+
+test("a rich-text task-list heading may end with a full stop", () => {
+  const result = evaluate([
+    {
+      ...message,
+      messageType: "post",
+      content: JSON.stringify({
+        title: "",
+        content: [
+          [{ tag: "text", text: "Avery’s To Do List." }],
+          [{ tag: "text", text: "1. Edit two videos" }],
+        ],
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.decisions[0]?.reason).toBe("task_list");
+  expect(result.entries).toHaveLength(1);
+});
+
+test("a weekday may appear between the owner's name and task-list heading", () => {
+  const result = evaluate([
+    {
+      ...message,
+      content: JSON.stringify({
+        text: "Avery’s Tuesday To-Do List\n1st October 2026\n1. Update the sales sheet",
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries).toHaveLength(1);
+});
+
+test("a calendar date may follow the task-list heading on the same line", () => {
+  const result = evaluate([
+    {
+      ...message,
+      messageType: "post",
+      content: JSON.stringify({
+        title: "Avery's task list 1st OCT",
+        content: [[{ tag: "text", text: "1. Review the monthly report" }]],
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries).toHaveLength(1);
+});
+
+test("a possessive name may omit its apostrophe in a task-list heading", () => {
+  const result = evaluate([
+    {
+      ...message,
+      content: JSON.stringify({
+        text: "Averys to do list\n1:Review the sales sheet",
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries).toHaveLength(1);
+});
+
+test("a backtick may be used as the possessive apostrophe in a task-list heading", () => {
+  const result = evaluate([
+    {
+      ...message,
+      messageType: "post",
+      content: JSON.stringify({
+        title: "Avery`s ToDo List",
+        content: [[{ tag: "text", text: "1. Upload two videos" }]],
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries).toHaveLength(1);
+});
+
+test("a Do List heading with numbered tasks is a submission even when To is omitted", () => {
+  const result = evaluate([
+    {
+      ...message,
+      messageType: "post",
+      content: JSON.stringify({
+        title: "Avery's Do List",
+        content: [
+          [{ tag: "text", text: "1st October" }],
+          [{ tag: "text", text: "1. Manage the livestream" }],
+        ],
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries).toHaveLength(1);
+});
+
+test.each([
+  "Weekly Summary Report\n1. Edited two videos\n2. Reviewed the weekly to-do list",
+  "Please write the number of videos on your to do list\n1. Include all edits",
+  "Task list submission reminder\n1. Post by 10:00",
+])("numbered announcements and reports are not submissions: %s", (text) => {
+  const result = evaluate([{ ...message, content: JSON.stringify({ text }) }]);
+  expect(result.entries).toEqual([]);
+  expect(result.status).toBe("needs_review");
+});
+
 test("a task-list heading cannot replace the platform sender identity", () => {
   const result = evaluateSubmissions({
     businessDate: "2026-10-01",

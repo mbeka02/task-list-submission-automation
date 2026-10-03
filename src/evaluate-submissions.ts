@@ -64,25 +64,25 @@ export interface SubmissionDecision {
   normalizedText: string | null;
   outcome: "eligible" | "excluded" | "review";
   reason:
-    | "unapproved_source"
-    | "not_working_day"
-    | "invalid_timestamp"
-    | "outside_business_date"
-    | "after_cutoff"
-    | "deleted"
-    | "non_human_sender"
-    | "not_original_submission"
-    | "unsupported_message_type"
-    | "malformed_content"
-    | "thread_reply_excluded"
-    | "thread_policy_unconfirmed"
-    | "unresolved_identity"
-    | "unresolved_name"
-    | "task_list"
-    | "incomplete_task_list"
-    | "ambiguous_task_heading"
-    | "not_task_list"
-    | "duplicate_sender";
+  | "unapproved_source"
+  | "not_working_day"
+  | "invalid_timestamp"
+  | "outside_business_date"
+  | "after_cutoff"
+  | "deleted"
+  | "non_human_sender"
+  | "not_original_submission"
+  | "unsupported_message_type"
+  | "malformed_content"
+  | "thread_reply_excluded"
+  | "thread_policy_unconfirmed"
+  | "unresolved_identity"
+  | "unresolved_name"
+  | "task_list"
+  | "incomplete_task_list"
+  | "ambiguous_task_heading"
+  | "not_task_list"
+  | "duplicate_sender";
 }
 
 /**

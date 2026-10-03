@@ -40,6 +40,36 @@ function evaluate(
   });
 }
 
+test.each(["TO   DO LIST", "to  do List", "To\tDo list", "to  do"])(
+  "extra horizontal spacing still qualifies as a task-list heading: %s",
+  (heading) => {
+    const result = evaluate([
+      {
+        ...message,
+        content: JSON.stringify({ text: `${heading}\n1. Review the report` }),
+      },
+    ]);
+    expect(result.status).toBe("ready");
+    expect(result.decisions[0]?.reason).toBe("task_list");
+    expect(result.entries).toHaveLength(1);
+  },
+);
+
+test.each(["To  -  Do list", "TO -DO LIST", "to- do List", "To - Do"])(
+  "horizontal spacing around the hyphen still qualifies as a heading: %s",
+  (heading) => {
+    const result = evaluate([
+      {
+        ...message,
+        content: JSON.stringify({ text: `${heading}\n- Review the report` }),
+      },
+    ]);
+    expect(result.status).toBe("ready");
+    expect(result.decisions[0]?.reason).toBe("task_list");
+    expect(result.entries).toHaveLength(1);
+  },
+);
+
 test("a rich-text task-list heading may end with a full stop", () => {
   const result = evaluate([
     {

@@ -150,6 +150,33 @@ export const dailyBriefs = sqliteTable(
     sourceChatId: text().notNull(),
     destinationChatId: text().notNull(),
     revision: integer().notNull().default(1),
+    publicationState: text({
+      enum: [
+        "pending",
+        "creating",
+        "writing",
+        "verifying",
+        "sharing",
+        "verified",
+        "published",
+        "review_required",
+      ],
+    })
+      .notNull()
+      .default("pending"),
+    documentUrl: text(),
+    documentHash: text(),
+    documentRevision: integer(),
+    documentWriteTokens: text({ mode: "json" })
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+    publicationClaimToken: text(),
+    publicationClaimExpiresMs: integer(),
+    publicationLastError: text(),
+    stagingFolderToken: text(),
+    documentBaseUrl: text(),
+    announcementDeliveryId: text().references(() => deliveries.id),
     captureThroughMs: integer().notNull(),
     observedAtMs: integer().notNull(),
     inputFingerprint: text().notNull(),
@@ -187,6 +214,30 @@ export const dailyBriefs = sqliteTable(
   },
   (table) => [
     check("brief_valid_revision", sql`${table.revision} >= 1`),
+    check(
+      "brief_publication_state",
+      sql`${table.publicationState} IN ('pending','creating','writing','verifying','sharing','verified','published','review_required')`,
+    ),
+    check(
+      "brief_document_hash",
+      sql`${table.documentHash} IS NULL OR (length(${table.documentHash}) = 64 AND ${table.documentHash} NOT GLOB '*[^0-9a-f]*')`,
+    ),
+    check(
+      "brief_document_revision",
+      sql`${table.documentRevision} IS NULL OR ${table.documentRevision} >= 0`,
+    ),
+    check(
+      "brief_write_token_json",
+      sql`json_valid(${table.documentWriteTokens}) AND json_type(${table.documentWriteTokens}) = 'array'`,
+    ),
+    check(
+      "brief_publication_claim",
+      sql`(${table.publicationClaimToken} IS NULL AND ${table.publicationClaimExpiresMs} IS NULL) OR (${table.publicationClaimToken} IS NOT NULL AND ${table.publicationClaimExpiresMs} IS NOT NULL AND ${table.publicationClaimExpiresMs} >= 0)`,
+    ),
+    check(
+      "brief_verified_reference",
+      sql`${table.publicationState} NOT IN ('verified','published') OR (${table.documentUrl} IS NOT NULL AND ${table.documentHash} IS NOT NULL AND ${table.documentRevision} IS NOT NULL)`,
+    ),
     check(
       "brief_valid_capture",
       sql`${table.captureThroughMs} >= 0 AND ${table.observedAtMs} >= ${table.captureThroughMs}`,

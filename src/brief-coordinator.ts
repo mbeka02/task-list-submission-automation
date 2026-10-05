@@ -10,6 +10,12 @@ import {
   validateBriefRequest,
 } from "./brief-generator.js";
 import { type BriefLedgerOptions, openBriefLedger } from "./brief-ledger.js";
+import {
+  type BriefDocOptions,
+  openLarkBriefDoc,
+  renderBriefDoc,
+} from "./lark-brief-doc.js";
+import { type DeliveryTransport, openReportLedger } from "./report-ledger.js";
 import { dailyBriefs } from "./storage/schema.js";
 import { requiresRestoreReview } from "./storage-recovery.js";
 
@@ -19,11 +25,17 @@ export interface BriefCoordinatorOptions extends BriefLedgerOptions {
   template: string;
   instructions: string;
   clock?: () => number;
+  docPublishing?: BriefDocOptions;
+  transport?: DeliveryTransport;
 }
 
-/** S10 owns generation attempts and memory-only document content; it never publishes or sends. */
+/** S10 coordinates generation and optional Doc publication without persisting the brief body. */
 export function openBriefCoordinator(options: BriefCoordinatorOptions) {
+  const docs = options.docPublishing
+    ? openLarkBriefDoc(options.appId, options.docPublishing)
+    : null;
   const ledger = openBriefLedger(options);
+  const announcements = openReportLedger({ ...options });
   const sqlite = new Database(options.databasePath);
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
@@ -66,6 +78,20 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         status: "blocked" as const,
         reason: "generation_configuration_mismatch",
       };
+    if (
+      docs &&
+      brief.publicationState !== "pending" &&
+      (brief.stagingFolderToken !== options.docPublishing?.stagingFolderToken ||
+        brief.documentBaseUrl !== options.docPublishing?.documentBaseUrl)
+    )
+      return {
+        status: "blocked" as const,
+        reason: "publication_configuration_mismatch",
+      };
+    if (docs && ["verified", "published"].includes(brief.publicationState))
+      return announce(briefId);
+    if (docs && brief.publicationState !== "pending")
+      return recoverPublication(briefId);
     if (brief.generationState === "review_required")
       return {
         status: "review_required" as const,
@@ -91,12 +117,16 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       brief.generationState === "content_ready" &&
       brief.generationKind === "fallback"
     )
-      return { status: "ready" as const, content: sourceContent(brief) };
+      return docs
+        ? publish(briefId, sourceContent(brief))
+        : { status: "ready" as const, content: sourceContent(brief) };
     if (
       brief.generationState === "content_ready" &&
       brief.generationKind === "empty"
     )
-      return { status: "ready" as const, content: emptyContent(brief) };
+      return docs
+        ? publish(briefId, emptyContent(brief))
+        : { status: "ready" as const, content: emptyContent(brief) };
     const token = randomUUID();
 
     // Immediate claims serialize owners; recovery retains the original deadline and consumed reservations.
@@ -142,7 +172,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       eq(dailyBriefs.generationClaimToken, token),
     );
     /** Hash the memory-only handoff; generated text has no storage column. */
-    function finish(content: BriefContent) {
+    async function finish(content: BriefContent) {
       if (requiresRestoreReview(options.databasePath))
         return {
           status: "not_started" as const,
@@ -165,7 +195,9 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         .run();
       if (!saved.changes)
         return { status: "not_started" as const, reason: "claim_lost" };
-      return { status: "ready" as const, content };
+      return docs
+        ? publish(briefId, content)
+        : { status: "ready" as const, content };
     }
     if (brief.entries.length === 0) return finish(emptyContent(brief));
     const request = {
@@ -351,12 +383,232 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     }
     return finish(sourceContent(brief));
   }
+  /** Fence publication mutations against restore pause, lease expiry and a replacement owner. */
+  function publicationFence(briefId: string, token: string) {
+    const owned = and(
+      eq(dailyBriefs.id, briefId),
+      eq(dailyBriefs.publicationClaimToken, token),
+    );
+    return {
+      guard() {
+        const brief = getBrief(briefId);
+        const current = clock();
+        if (
+          requiresRestoreReview(options.databasePath) ||
+          !Number.isSafeInteger(current) ||
+          brief?.publicationClaimToken !== token ||
+          brief.publicationClaimExpiresMs === null ||
+          current + 15000 >= brief.publicationClaimExpiresMs
+        )
+          throw new Error("Publication paused or claim unavailable");
+      },
+      save(values: Partial<typeof dailyBriefs.$inferInsert>) {
+        if (!db.update(dailyBriefs).set(values).where(owned).run().changes)
+          throw new Error("Publication claim lost");
+      },
+    };
+  }
+  /** Persist each mutation's intent and acknowledged reference before proceeding to the next operation. */
+  async function publish(briefId: string, content: BriefContent) {
+    if (!docs || !options.docPublishing)
+      return {
+        status: "blocked" as const,
+        reason: "publishing_not_configured",
+      };
+    const token = randomUUID();
+    const rendered = renderBriefDoc(content);
+    const claimed = db
+      .update(dailyBriefs)
+      .set({
+        publicationState: "creating",
+        publicationClaimToken: token,
+        publicationClaimExpiresMs: clock() + 10 * 60_000,
+        documentHash: rendered.hash,
+        stagingFolderToken: options.docPublishing.stagingFolderToken,
+        documentBaseUrl: options.docPublishing.documentBaseUrl,
+      })
+      .where(
+        and(
+          eq(dailyBriefs.id, briefId),
+          eq(dailyBriefs.publicationState, "pending"),
+        ),
+      )
+      .run();
+    if (!claimed.changes)
+      return {
+        status: "not_started" as const,
+        reason: "publication_claim_active",
+      };
+    const owned = and(
+      eq(dailyBriefs.id, briefId),
+      eq(dailyBriefs.publicationClaimToken, token),
+    );
+    const fence = publicationFence(briefId, token);
+    try {
+      await docs.authenticate();
+      fence.guard();
+      const created = await docs.create(content.title);
+      const id = new URL(created.url).pathname.split("/").at(-1);
+      if (!id) throw new Error("Doc reference unavailable");
+      fence.save({
+        documentUrl: created.url,
+        documentRevision: created.revision,
+        publicationState: "writing",
+      });
+      await docs.assertPrivate(id);
+      let revision = created.revision;
+      const tokens: string[] = [];
+      for (let offset = 0; offset < rendered.blocks.length; offset += 50) {
+        tokens.push(randomUUID());
+        fence.save({ documentWriteTokens: [...tokens] });
+        fence.guard();
+        revision = await docs.write(
+          id,
+          rendered.blocks.slice(offset, offset + 50),
+          tokens.at(-1) ?? "",
+          revision,
+        );
+        fence.save({ documentRevision: revision });
+      }
+      fence.save({ publicationState: "verifying" });
+      revision = await docs.verify(id, content.title, rendered.hash);
+      fence.save({ publicationState: "sharing", documentRevision: revision });
+      await docs.share(id, options.destinationChatId, fence.guard);
+      fence.guard();
+      fence.save({
+        publicationState: "verified",
+        publicationClaimToken: null,
+        publicationClaimExpiresMs: null,
+      });
+      return announce(briefId);
+    } catch {
+      const reason = getBrief(briefId)?.documentUrl
+        ? "document_operation_unverified"
+        : "document_creation_unknown";
+      db.update(dailyBriefs)
+        .set({
+          publicationState: "review_required",
+          publicationLastError: reason,
+          publicationClaimToken: null,
+          publicationClaimExpiresMs: null,
+        })
+        .where(owned)
+        .run();
+      return { status: "review_required" as const, reason };
+    }
+  }
+  /** Announce an already verified document; the existing ledger owns send claims and UUID retries. */
+  async function announce(briefId: string) {
+    const frozen = announcements.prepareBriefAnnouncement({ briefId });
+    if (frozen.status !== "frozen")
+      return { status: "blocked" as const, reason: "announcement_unavailable" };
+    db.update(dailyBriefs)
+      .set({ publicationState: "published" })
+      .where(eq(dailyBriefs.id, briefId))
+      .run();
+    const delivery = await announcements.deliverDelivery({
+      deliveryId: frozen.delivery.id,
+      now: clock(),
+    });
+    return {
+      status: "published" as const,
+      documentUrl: getBrief(briefId)?.documentUrl,
+      deliveryId: frozen.delivery.id,
+      delivery,
+    };
+  }
+  /** A known Doc can be verified after response loss; recovery never writes its content again. */
+  async function recoverPublication(briefId: string) {
+    const brief = getBrief(briefId);
+    if (
+      brief?.publicationClaimExpiresMs !== null &&
+      brief?.publicationClaimExpiresMs !== undefined &&
+      brief.publicationClaimExpiresMs > clock()
+    )
+      return {
+        status: "not_started" as const,
+        reason: "publication_claim_active",
+      };
+    if (!docs || !brief?.documentUrl || !brief.documentHash)
+      return {
+        status: "review_required" as const,
+        reason: "document_creation_unknown",
+      };
+    const token = randomUUID();
+    const claimed = db.transaction(
+      (tx) => {
+        const current = getBrief(briefId);
+        if (
+          !current ||
+          (current.publicationClaimExpiresMs !== null &&
+            current.publicationClaimExpiresMs > clock()) ||
+          ["published", "verified"].includes(current.publicationState)
+        )
+          return false;
+        tx.update(dailyBriefs)
+          .set({
+            publicationClaimToken: token,
+            publicationClaimExpiresMs: clock() + 10 * 60_000,
+          })
+          .where(eq(dailyBriefs.id, briefId))
+          .run();
+        return true;
+      },
+      { behavior: "immediate" },
+    );
+    if (!claimed)
+      return {
+        status: "not_started" as const,
+        reason: "publication_claim_active",
+      };
+    const owned = and(
+      eq(dailyBriefs.id, briefId),
+      eq(dailyBriefs.publicationClaimToken, token),
+    );
+    const fence = publicationFence(briefId, token);
+    try {
+      await docs.authenticate();
+      const id = new URL(brief.documentUrl).pathname.split("/").at(-1);
+      if (!id) throw new Error("Doc reference unavailable");
+      const revision = await docs.verify(
+        id,
+        `Today's brief — ${brief.businessDate}`,
+        brief.documentHash,
+      );
+      await docs.share(id, options.destinationChatId, fence.guard);
+      fence.guard();
+      fence.save({
+        publicationState: "verified",
+        documentRevision: revision,
+        publicationLastError: null,
+        publicationClaimToken: null,
+        publicationClaimExpiresMs: null,
+      });
+      return announce(briefId);
+    } catch {
+      db.update(dailyBriefs)
+        .set({
+          publicationState: "review_required",
+          publicationLastError: "document_operation_unverified",
+          publicationClaimToken: null,
+          publicationClaimExpiresMs: null,
+        })
+        .where(owned)
+        .run();
+      return {
+        status: "review_required" as const,
+        reason: "document_operation_unverified",
+      };
+    }
+  }
   return {
     completeDailyBrief,
     getBrief,
+    getDelivery: announcements.getDelivery,
     close() {
       sqlite.close();
       ledger.close();
+      announcements.close();
     },
   };
 }

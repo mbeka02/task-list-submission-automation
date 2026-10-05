@@ -10,7 +10,12 @@ export interface CapturedLarkRequest {
 }
 
 export async function larkHttpServer(
-  respond: (request: CapturedLarkRequest) => { body: unknown; status?: number },
+  respond: (request: CapturedLarkRequest) => {
+    body: unknown;
+    status?: number;
+    delayMs?: number;
+    disconnect?: boolean;
+  },
 ) {
   const requests: CapturedLarkRequest[] = [];
   const origins: string[] = [];
@@ -29,6 +34,12 @@ export async function larkHttpServer(
     requests.push(request);
     try {
       const result = respond(request);
+      if (result.disconnect) {
+        incoming.socket.destroy();
+        return;
+      }
+      if (result.delayMs)
+        await new Promise((resolve) => setTimeout(resolve, result.delayMs));
       response.writeHead(result.status ?? 200, {
         "Content-Type": "application/json",
       });

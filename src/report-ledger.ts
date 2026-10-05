@@ -9,6 +9,7 @@ import {
   type SubmissionInput,
 } from "./evaluate-submissions.js";
 import {
+  dailyBriefs,
   deliveries,
   type EvidenceObservation,
   messages,
@@ -275,6 +276,73 @@ export function openReportLedger(options: LedgerOptions) {
             .run();
           const delivery = getDelivery(id);
           if (!delivery) throw new Error("Frozen reminder unavailable");
+          return { status: "frozen" as const, delivery };
+        },
+        { behavior: "immediate" },
+      );
+    } catch {
+      return blocked(["storage_error"]);
+    }
+  }
+  /** Freeze only the verified Doc's link; repeated calls preserve the announcement UUID. */
+  function prepareBriefAnnouncement({ briefId }: { briefId: string }) {
+    if (requiresRestoreReview(options.databasePath))
+      return blocked(["restore_review_required"]);
+    try {
+      return db.transaction(
+        (tx) => {
+          const brief = tx
+            .select()
+            .from(dailyBriefs)
+            .where(
+              and(
+                eq(dailyBriefs.id, briefId),
+                eq(dailyBriefs.appId, options.appId),
+                eq(dailyBriefs.sourceChatId, options.sourceChatId),
+                eq(dailyBriefs.destinationChatId, options.destinationChatId),
+              ),
+            )
+            .get();
+          if (
+            !brief ||
+            !["verified", "published"].includes(brief.publicationState) ||
+            !brief.documentUrl ||
+            !brief.documentHash ||
+            brief.documentRevision === null
+          )
+            return blocked(["document_not_verified"]);
+          if (brief.announcementDeliveryId) {
+            const delivery = getDelivery(brief.announcementDeliveryId);
+            if (!delivery) return blocked(["announcement_unavailable"]);
+            return { status: "frozen" as const, delivery };
+          }
+          const id = createHash("sha256")
+            .update(JSON.stringify([brief.id, "brief"]))
+            .digest("hex");
+          const text = `Today's brief — ${brief.businessDate}\n${brief.documentUrl}`;
+          tx.insert(deliveries)
+            .values({
+              id,
+              appId: options.appId,
+              sourceChatId: options.sourceChatId,
+              destinationChatId: options.destinationChatId,
+              businessDate: brief.businessDate,
+              kind: "brief",
+              revision: brief.revision,
+              policyVersion: brief.policyVersion,
+              text,
+              textHash: createHash("sha256").update(text).digest("hex"),
+              sendUuid: (options.newSendUuid ?? randomUUID)(),
+              state: "pending",
+              cutoffMs: brief.captureThroughMs,
+            })
+            .run();
+          tx.update(dailyBriefs)
+            .set({ announcementDeliveryId: id })
+            .where(eq(dailyBriefs.id, briefId))
+            .run();
+          const delivery = getDelivery(id);
+          if (!delivery) throw new Error("Announcement unavailable");
           return { status: "frozen" as const, delivery };
         },
         { behavior: "immediate" },
@@ -892,6 +960,7 @@ export function openReportLedger(options: LedgerOptions) {
     getDailyDelivery,
     listDailyDeliveries,
     prepareReminder,
+    prepareBriefAnnouncement,
     deliverDelivery,
     reconcileDelivery,
     close: () => sqlite.close(),

@@ -57,6 +57,13 @@
       "when": 1791204199362,
       "tag": "0007_secret_grey_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791209569360,
+      "tag": "0008_daily_phantom_reporter",
+      "breakpoints": true
     }
   ]
 }

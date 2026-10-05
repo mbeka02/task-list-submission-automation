@@ -44,6 +44,8 @@ One Node.js worker coordinates the workflow and stores its ledger in a dedicated
 
 ### Architecture
 
+**Core reports and reminders**
+
 ```mermaid
 %%{init: {"theme":"base","fontFamily":"sans-serif","themeVariables":{"fontFamily":"sans-serif","fontSize":"15px","lineColor":"#64748b","primaryTextColor":"#0f172a","edgeLabelBackground":"#f8fafc"},"flowchart":{"curve":"linear","nodeSpacing":40,"rankSpacing":45}}}%%
 flowchart TB
@@ -77,6 +79,44 @@ flowchart TB
 ```
 
 **Legend:** blue = Lark groups; green = worker modules; purple = persistent storage; amber = configuration; orange = outbound adapter. Dashed arrows require future activation. The coordinator records outcomes back into SQLite; that return path is omitted to keep the diagram readable.
+
+**Optional AI brief — implemented modules and remaining integration**
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"sans-serif","fontSize":"15px","lineColor":"#64748b","primaryTextColor":"#0f172a","edgeLabelBackground":"#f8fafc"},"flowchart":{"curve":"linear","nodeSpacing":45,"rankSpacing":40}}}%%
+flowchart TB
+    SOURCE_AI["DB STUDIO EXTERNAL<br/>Same source and user OAuth"]:::lark
+    CAPTURE["Brief submission reader<br/>Before 10:15 · late from 10:01"]:::worker
+    INPUT[("SQLite frozen brief input<br/>Task text · names · evidence · versions")]:::storage
+    COORD["Planned generation coordinator<br/>10:15 scheduling · claims · fallback"]:::planned
+    SELECT["Provider factory · BriefGenerator<br/>Template + instructions + opaque task references"]:::worker
+    GEMINI["Gemini · official SDK<br/>Minimal thinking · one attempt"]:::provider
+    DEEPSEEK["DeepSeek · native fetch<br/>Thinking disabled · one attempt"]:::provider
+    VALIDATE["Shared draft validation<br/>Reference coverage · limits · safe failures"]:::worker
+    DOC["Planned editable Lark Doc<br/>Professional layout · AI-generated footer"]:::planned
+    LINK["Planned Doc-link persistence + delivery<br/>Store link; Doc body stays outside SQLite"]:::planned
+    MANAGEMENT["MANAGEMENT GROUP<br/>Brief supplements the names report"]:::lark
+
+    SOURCE_AI --> CAPTURE
+    CAPTURE --> INPUT
+    INPUT -.-> COORD
+    COORD -.-> SELECT
+    SELECT -->|Select one| GEMINI
+    SELECT -->|Select one| DEEPSEEK
+    GEMINI --> VALIDATE
+    DEEPSEEK --> VALIDATE
+    VALIDATE -.-> DOC
+    DOC -.-> LINK
+    LINK -.-> MANAGEMENT
+
+    classDef lark fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px;
+    classDef worker fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
+    classDef storage fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px;
+    classDef provider fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px;
+    classDef planned fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-width:2px,stroke-dasharray:5 4;
+```
+
+**Legend:** blue = Lark; green = implemented library modules; purple = frozen input storage; orange = interchangeable model adapters; gray/dashed = planned integration. The brief path is not yet scheduled or published. Each selected adapter makes one request; retries and source-text fallback belong to the future coordinator. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
 
 History reads use the approved user's access because the source is an external group. Sending uses the approved app bot and explicit destination scope. Both stay bound to the same app ID; neither falls back to another account or group.
 

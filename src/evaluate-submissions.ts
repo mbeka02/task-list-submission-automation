@@ -206,7 +206,8 @@ export function evaluateSubmissions(
     input.policy.publicHolidays.includes(input.businessDate);
   // This seam's approved zone is Nairobi (UTC+03:00, without daylight saving).
   const start = Date.parse(`${input.businessDate}T00:00:00.000+03:00`);
-  const cutoff = Date.parse(`${input.businessDate}T10:00:00.000+03:00`);
+  // The whole displayed 10:00 minute qualifies; 10:01 is the exclusive boundary.
+  const cutoff = Date.parse(`${input.businessDate}T10:01:00.000+03:00`);
   // Keep a decision for every input, including exclusions and review issues.
   const decisions = input.messages.map<SubmissionDecision>((message) => {
     if (
@@ -245,7 +246,7 @@ export function evaluateSubmissions(
     const exclusion =
       message.createdMs < start || message.createdMs >= start + 86_400_000
         ? "outside_business_date"
-        : message.createdMs > cutoff
+        : message.createdMs >= cutoff
           ? "after_cutoff"
           : null;
     if (exclusion)

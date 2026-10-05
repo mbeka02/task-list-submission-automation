@@ -323,7 +323,7 @@ acceptance(
       const prepared = ledger.prepareDailyReport({ businessDate: '2026-10-02',
         policy: { appId, sourceChatId, timeZone: 'Africa/Nairobi', publicHolidays: [], replyPolicy: 'exclude', policyVersion: 'synthetic-release-v1' },
         scan: { status: 'complete', appId, sourceChatId, businessDate: '2026-10-02', observedAtMs: now,
-          fromMs: Date.parse('2026-10-01T21:00:00.000Z'), throughMs: Date.parse('2026-10-02T07:00:00.000Z'), replyPolicy: 'exclude',
+          fromMs: Date.parse('2026-10-01T21:00:00.000Z'), throughMs: Date.parse('2026-10-02T07:01:00.000Z'), replyPolicy: 'exclude',
           messages: [{ observationId: 'obs_release', messageId: 'om_release', appId, sourceChatId,
             sender: { type: 'user', tenantKey: 'external_fixture', openId: 'ou_synthetic', displayName: 'Synthetic Submitter' },
             createdMs: Date.parse('2026-10-02T06:55:00.000Z'), updatedMs: Date.parse('2026-10-02T06:55:00.000Z'),

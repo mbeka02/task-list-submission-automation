@@ -574,7 +574,7 @@ test("retrying one report cannot claim another due report", async () => {
         businessDate: "2026-10-02",
         observedAtMs: clock,
         fromMs: 1790888400000,
-        throughMs: 1790924400000,
+        throughMs: 1790924460000,
         messages: [],
       },
     });
@@ -1039,7 +1039,7 @@ test("independent processes send once and outbound waiting leaves SQLite availab
         businessDate: "2026-10-02",
         observedAtMs: now + 86_400_000,
         fromMs: Date.parse("2026-10-01T21:00:00.000Z"),
-        throughMs: Date.parse("2026-10-02T07:00:00.000Z"),
+        throughMs: Date.parse("2026-10-02T07:01:00.000Z"),
         messages: [
           {
             ...observation,
@@ -1322,7 +1322,7 @@ test("a freeze constraint failure rolls back the report and its new evidence and
     ...scan,
     businessDate: "2026-10-02",
     fromMs: Date.parse("2026-10-01T21:00:00.000Z"),
-    throughMs: Date.parse("2026-10-02T07:00:00.000Z"),
+    throughMs: Date.parse("2026-10-02T07:01:00.000Z"),
     observedAtMs: nextDay,
     messages: [bob],
   };
@@ -1500,7 +1500,7 @@ test("report evidence includes original and normalized content and source times 
   try {
     expect(reopened.getDelivery(result.delivery.id)).toMatchObject({
       timeZone: "Africa/Nairobi",
-      cutoffMs: 1790838000000,
+      cutoffMs: 1790838060000,
       entries: [
         {
           observation: {
@@ -1567,6 +1567,41 @@ test("repeated preparation preserves the frozen text, name, UUID and original ev
     expect(repeated).toEqual(first);
   } finally {
     reopened.close();
+  }
+});
+
+test("a report cannot freeze during the 10:00 minute and persists the 10:01 boundary", () => {
+  let clock = Date.parse("2026-10-01T07:00:59.999Z");
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: databasePath(),
+    clock: () => clock,
+  });
+  const covered = {
+    ...scan,
+    throughMs: Date.parse("2026-10-01T07:01:00.000Z"),
+  };
+  try {
+    expect(
+      ledger.prepareDailyReport({
+        businessDate: "2026-10-01",
+        scan: covered,
+        policy,
+      }),
+    ).toMatchObject({ status: "blocked", reasons: ["before_cutoff"] });
+    clock = Date.parse("2026-10-01T07:01:00.000Z");
+    expect(
+      ledger.prepareDailyReport({
+        businessDate: "2026-10-01",
+        scan: covered,
+        policy,
+      }),
+    ).toMatchObject({
+      status: "frozen",
+      delivery: { cutoffMs: Date.parse("2026-10-01T07:01:00.000Z") },
+    });
+  } finally {
+    ledger.close();
   }
 });
 
@@ -1725,7 +1760,7 @@ const scan = {
   businessDate: "2026-10-01",
   observedAtMs: now,
   fromMs: Date.parse("2026-09-30T21:00:00.000Z"),
-  throughMs: Date.parse("2026-10-01T07:00:00.000Z"),
+  throughMs: Date.parse("2026-10-01T07:01:00.000Z"),
   replyPolicy: "exclude",
   messages: [observation],
 } as const;

@@ -123,7 +123,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     });
 
   /**
-   * After cutoff, read main-post history covering Nairobi midnight through 10:00.
+   * At 10:01 or later, read main-post history covering the entire Nairobi 10:00 minute.
    * Query bounds are padded; the evaluator applies the exact millisecond cutoff.
    * Merge overlaps to the latest observed version and block conflicting source evidence.
    * Provider/credential failures return sanitized incomplete/unavailable outcomes.
@@ -132,7 +132,7 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     input: HistoryReadInput,
   ): Promise<HistoryScan> {
     const fromMs = Date.parse(`${input.businessDate}T00:00:00.000+03:00`);
-    const throughMs = Date.parse(`${input.businessDate}T10:00:00.000+03:00`);
+    const throughMs = Date.parse(`${input.businessDate}T10:01:00.000+03:00`);
     const messages: SubmissionObservation[] = [];
     const messagePositions = new Map<string, number>();
     const sourceIdentities = new Map<string, SubmissionObservation>();

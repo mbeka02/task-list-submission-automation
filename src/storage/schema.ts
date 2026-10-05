@@ -7,6 +7,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type { BriefGenerationAttempt } from "../brief-content.js";
 import type { BriefEntry } from "../brief-submissions.js";
 import type {
   SubmissionEntry,
@@ -164,6 +165,25 @@ export const dailyBriefs = sqliteTable(
     state: text({ enum: ["input_frozen"] })
       .notNull()
       .default("input_frozen"),
+    // Input state stays immutable; generation metadata evolves without storing a Doc body.
+    generationState: text({
+      enum: ["pending", "generating", "content_ready", "review_required"],
+    })
+      .notNull()
+      .default("pending"),
+    generationStartedMs: integer(),
+    generationDeadlineMs: integer(),
+    generationAttemptCount: integer().notNull().default(0),
+    generationAttempts: text({ mode: "json" })
+      .$type<BriefGenerationAttempt[]>()
+      .notNull()
+      .default([]),
+    generationKind: text({ enum: ["ai", "fallback", "empty"] }),
+    contentHash: text(),
+    generationClaimToken: text(),
+    generationClaimExpiresMs: integer(),
+    generationNextAttemptMs: integer(),
+    generationLastError: text(),
   },
   (table) => [
     check("brief_valid_revision", sql`${table.revision} >= 1`),
@@ -177,6 +197,22 @@ export const dailyBriefs = sqliteTable(
     ),
     check("brief_doc_mode", sql`${table.outputMode} = 'doc'`),
     check("brief_input_state", sql`${table.state} = 'input_frozen'`),
+    check(
+      "brief_generation_state",
+      sql`${table.generationState} IN ('pending', 'generating', 'content_ready', 'review_required')`,
+    ),
+    check(
+      "brief_generation_attempt_cap",
+      sql`${table.generationAttemptCount} BETWEEN 0 AND 2`,
+    ),
+    check(
+      "brief_generation_kind",
+      sql`${table.generationKind} IS NULL OR ${table.generationKind} IN ('ai', 'fallback', 'empty')`,
+    ),
+    check(
+      "brief_generation_attempt_json",
+      sql`json_valid(${table.generationAttempts}) AND json_type(${table.generationAttempts}) = 'array' AND json_array_length(${table.generationAttempts}) = ${table.generationAttemptCount}`,
+    ),
     uniqueIndex("brief_business_key").on(
       table.appId,
       table.businessDate,

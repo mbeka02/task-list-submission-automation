@@ -182,10 +182,15 @@ during a send can leave `sending`: later expiry is uncertain, not proof of failu
 
 Stop the worker before changing reviewed calendar/scope or replacing its image.
 Take a consistent backup, retain configuration/volumes, and record the old image ID.
-This local release adds no migration. Its tested predecessor uses the same packaged
-schema; rolling back application code must preserve delivery keys/UUIDs and sent
-state. For future migrations, verify backward compatibility or restore to isolated
-paused storage before changing application versions. Never truncate the ledger to
+AI-2 adds the `daily_brief` and `brief_entry` tables without changing existing
+names/reminder tables. Back up with the **previous release before upgrading**;
+opening a writable ledger applies the packaged migrations. Rehearse the upgrade
+on isolated storage first. Backup/restore commands require their release's exact
+migration history, so use the upgraded release for snapshots taken after upgrade.
+The local predecessor rollback check preserves pending/sent delivery records,
+UUIDs and acknowledgements, but that predecessor cannot operate the new brief
+module. Keep the upgraded schema intact when rolling back application code; verify
+compatibility or restore to isolated paused storage before changing versions. Never truncate the ledger to
 make an old version start.
 
 If OAuth renewal reports revoked/expired/uncertain, stop and reauthorize the separate

@@ -1,10 +1,13 @@
+import { sql } from "drizzle-orm";
 import {
+  check,
   integer,
   primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import type { BriefEntry } from "../brief-submissions.js";
 import type {
   SubmissionEntry,
   SubmissionObservation,
@@ -131,6 +134,82 @@ export const reportEntries = sqliteTable(
     primaryKey({ columns: [table.deliveryId, table.position] }),
     uniqueIndex("report_distinct_sender").on(
       table.deliveryId,
+      table.senderIdentityKey,
+    ),
+  ],
+);
+
+/** One immutable brief input per scoped date/revision; generated Doc content is never stored here. */
+export const dailyBriefs = sqliteTable(
+  "daily_brief",
+  {
+    id: text().primaryKey(),
+    appId: text().notNull(),
+    businessDate: text().notNull(),
+    sourceChatId: text().notNull(),
+    destinationChatId: text().notNull(),
+    revision: integer().notNull().default(1),
+    captureThroughMs: integer().notNull(),
+    observedAtMs: integer().notNull(),
+    inputFingerprint: text().notNull(),
+    policyVersion: text().notNull(),
+    templateVersion: text().notNull(),
+    promptVersion: text().notNull(),
+    schemaVersion: text().notNull(),
+    provider: text({ enum: ["gemini", "deepseek"] }).notNull(),
+    model: text().notNull(),
+    outputMode: text({ enum: ["doc"] })
+      .notNull()
+      .default("doc"),
+    state: text({ enum: ["input_frozen"] })
+      .notNull()
+      .default("input_frozen"),
+  },
+  (table) => [
+    check("brief_valid_revision", sql`${table.revision} >= 1`),
+    check(
+      "brief_valid_capture",
+      sql`${table.captureThroughMs} >= 0 AND ${table.observedAtMs} >= ${table.captureThroughMs}`,
+    ),
+    check(
+      "brief_valid_provider",
+      sql`${table.provider} IN ('gemini', 'deepseek')`,
+    ),
+    check("brief_doc_mode", sql`${table.outputMode} = 'doc'`),
+    check("brief_input_state", sql`${table.state} = 'input_frozen'`),
+    uniqueIndex("brief_business_key").on(
+      table.appId,
+      table.businessDate,
+      table.sourceChatId,
+      table.destinationChatId,
+      table.revision,
+    ),
+  ],
+);
+
+/** Ordered source task text and name snapshots; exact evidence stays protected by a foreign key. */
+export const briefEntries = sqliteTable(
+  "brief_entry",
+  {
+    briefId: text()
+      .notNull()
+      .references(() => dailyBriefs.id),
+    position: integer().notNull(),
+    senderIdentityKey: text().notNull(),
+    observationKey: text()
+      .notNull()
+      .references(() => observations.id),
+    payload: text({ mode: "json" }).$type<BriefEntry>().notNull(),
+  },
+  (table) => [
+    check("brief_valid_position", sql`${table.position} >= 0`),
+    check(
+      "brief_valid_entry",
+      sql`json_valid(${table.payload}) AND coalesce(json_extract(${table.payload}, '$.timeliness') IN ('on_time', 'late'), 0)`,
+    ),
+    primaryKey({ columns: [table.briefId, table.position] }),
+    uniqueIndex("brief_distinct_sender").on(
+      table.briefId,
       table.senderIdentityKey,
     ),
   ],

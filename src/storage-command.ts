@@ -39,6 +39,8 @@ function validateLedger(database: Database.Database) {
       "message_observation",
       "daily_delivery",
       "report_entry",
+      "daily_brief",
+      "brief_entry",
     ])
       database.prepare(`SELECT * FROM ${table} LIMIT 0`).all();
     const violations = database.pragma("foreign_key_check");

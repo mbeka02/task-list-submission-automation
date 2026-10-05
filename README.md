@@ -36,7 +36,7 @@ Only supported text and rich-text task lists posted in the main conversation cou
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
-The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. This module is not yet connected to scheduled work; generation, brief persistence and editable Doc publishing are later slices.
+The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. Scheduling, model generation and editable Doc publishing remain later slices.
 
 ## System design
 
@@ -109,7 +109,7 @@ Reminder attempts stop at 10:00; automatic report attempts stop at the next Nair
 
 ## Database design
 
-The ledger has **four business tables** plus Drizzle's migration journal. [The Drizzle schema](src/storage/schema.ts) and [versioned SQL migrations](drizzle/) define the physical schema. JSON values are stored as SQLite `TEXT`; timestamps ending in `Ms` are epoch milliseconds.
+The ledger has **six business tables** plus Drizzle's migration journal. [The Drizzle schema](src/storage/schema.ts) and [versioned SQL migrations](drizzle/) define the physical schema. JSON values are stored as SQLite `TEXT`; timestamps ending in `Ms` are epoch milliseconds.
 
 ### Tables
 
@@ -119,6 +119,8 @@ The ledger has **four business tables** plus Drizzle's migration journal. [The D
 | `message_observation` | Preserve an immutable version the worker actually observed | `id`, `messageKey`, `fingerprint`, JSON `payload` with source content, normalized text, observation time and detector provenance |
 | `daily_delivery` | Freeze one report or reminder and track its delivery/recovery | Identity/scope: `id`, `appId`, `businessDate`, `sourceChatId`, `destinationChatId`, `kind`, `revision`; frozen content: `policyVersion`, `text`, `sendUuid`, `timeZone`, `cutoffMs`, `textHash`; lifecycle: `state`, `messageId`, `attemptCount`, `firstAttemptMs`, `nextAttemptMs`, `adapterKind`, `claimToken`, `claimExpiresMs`, `acknowledgedMs`, `lastError`, JSON `reconciliations` |
 | `report_entry` | Snapshot each distinct submitter and the exact evidence used in a report | `deliveryId`, `position`, JSON `payload` with identity/name/evidence, `observationKey`, `senderIdentityKey` |
+| `daily_brief` | Freeze one optional brief input per scoped date/revision | Scope/ID, revision, capture/observation times, input fingerprint, policy/template/prompt/schema versions, provider/model, `outputMode=doc`, `state=input_frozen` |
+| `brief_entry` | Ordered distinct brief membership, including labelled late submissions | `briefId`, `position`, `senderIdentityKey`, required `observationKey`, JSON `payload` with name/identity, original send time, timeliness and normalized source text |
 
 A reminder has a `daily_delivery` record and no report entries. A zero-submission report also has no entries. Later name changes or message edits do not alter a frozen report. Observations are evidence captured by this worker, not a complete Lark edit history. Ordinary unrelated group posts are not stored as new business records.
 
@@ -175,6 +177,40 @@ erDiagram
 
 The ERD shows selected columns; the table above lists the full schema. `PK` = primary key, `FK` = foreign key, `UK` = unique key; a circle means optional and a crow's foot means many. Entry positions form a composite primary key with `deliveryId`. New report entries link to one observation; that link remains nullable to support older records. Colours distinguish source messages (blue), observations (green), deliveries (purple) and report entries (amber).
 
+The brief adds separate membership because its 10:15 capture can include late submissions and newer observations. Repeat preparation returns the same job/input even after source edits or configuration changes. Names-report evidence retains its original detector provenance. These tables store **source task lists**, not generated Doc content; Doc links and publishing state will be added in later slices.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"lineColor":"#64748b","fontFamily":"sans-serif"}}}%%
+erDiagram
+    direction LR
+    message_observation ||..o{ brief_entry : "supports exact input"
+    daily_brief ||--o{ brief_entry : "contains distinct people"
+    message_observation {
+        TEXT id PK
+        TEXT payload "original evidence"
+    }
+    daily_brief {
+        TEXT id PK
+        TEXT businessDate
+        TEXT inputFingerprint
+        TEXT state "input_frozen"
+    }
+    brief_entry {
+        TEXT briefId PK, FK
+        INTEGER position PK
+        TEXT observationKey FK
+        TEXT senderIdentityKey
+        TEXT payload "source text + late label"
+    }
+    classDef evidence fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
+    classDef brief fill:#e0e7ff,stroke:#4f46e5,color:#312e81,stroke-width:2px;
+    class message_observation evidence
+    class daily_brief brief
+    class brief_entry brief
+```
+
+Green reuses existing evidence; indigo shows the new brief tables. Brief entries always reference exact evidence and use `(briefId, position)` as their composite primary key.
+
 ### Constraints and durability
 
 | Database rule | What it protects |
@@ -186,11 +222,15 @@ The ERD shows selected columns; the table above lists the full schema. `PK` = pr
 | `delivery_send_uuid`: unique `sendUuid` | A distinct persisted UUID for each delivery |
 | `report_entry` primary key `(deliveryId, position)` | One entry at each report position |
 | `report_distinct_sender`: unique `(deliveryId, senderIdentityKey)` | No repeated non-null sender identity within one report |
+| `brief_business_key`: unique `(appId, businessDate, sourceChatId, destinationChatId, revision)` | One brief job per scoped date/revision |
+| `brief_entry` primary key `(briefId, position)` and unique `(briefId, senderIdentityKey)` | Ordered, distinct brief membership |
+| Required brief entry → brief and entry → observation foreign keys | Every frozen input retains its job and exact source evidence |
+| Brief SQL checks for revision, capture times, provider, Doc mode, input state, position and JSON timeliness | Reject invalid brief storage values |
 | Foreign keys: observation → message; entry → delivery; entry → observation (nullable) | Referenced records must exist; deletions do not cascade |
 
-SQLite enforces primary keys, unique indexes, `NOT NULL` columns and enabled foreign keys. State values, JSON shapes, calendar rules, scope checks and safe lifecycle transitions are validated by the application; Drizzle's TypeScript enums do **not** create SQL `CHECK` constraints. Nullable evidence/audit columns preserve migration compatibility; incomplete legacy records cannot automatically send.
+SQLite enforces primary keys, unique indexes, `NOT NULL` columns and enabled foreign keys. Core delivery state values and JSON shapes, calendar rules, scope checks and safe lifecycle transitions are validated by the application. Brief tables additionally declare explicit SQL `CHECK` constraints; Drizzle's TypeScript enums alone do **not** create those checks. Nullable evidence/audit columns preserve migration compatibility; incomplete legacy records cannot automatically send.
 
-Connections use WAL, `synchronous=FULL` and a five-second busy timeout. Report freezing uses an immediate transaction; network calls never hold that transaction open. Keep SQLite on dedicated local persistent storage. Review generated migrations before applying them; use the [online backup and isolated restore procedure](RUNBOOK.md#back-up-and-rehearse-restore) rather than copying an active database file.
+Connections use WAL, `synchronous=FULL` and a five-second busy timeout. Report and brief freezing use immediate transactions; network calls never hold that transaction open. Keep SQLite on dedicated local persistent storage. Review generated migrations before applying them; use the [online backup and isolated restore procedure](RUNBOOK.md#back-up-and-rehearse-restore) rather than copying an active database file.
 
 ## Tech stack
 
@@ -303,6 +343,7 @@ Each phase/slice starts on its own branch from current `main`. Use coherent, pur
 | [src/evaluate-submissions.ts](src/evaluate-submissions.ts) | Task-list classification, names and distinct sender selection |
 | [src/submission-history.ts](src/submission-history.ts) | Paginated, bounded Lark history reads |
 | [src/brief-submissions.ts](src/brief-submissions.ts) | Optional brief input capture, shared validity rules and late labels; not yet scheduled |
+| [src/brief-ledger.ts](src/brief-ledger.ts) | Atomic brief-input freezing, immutable membership and scoped inspection; no model calls or publishing |
 | [src/user-oauth-credentials.ts](src/user-oauth-credentials.ts) | Private saved grants and durable OAuth renewal |
 | [src/report-ledger.ts](src/report-ledger.ts) | Evidence, report freezing, claims, retries and reconciliation |
 | [src/storage/schema.ts](src/storage/schema.ts) | Drizzle table definitions |

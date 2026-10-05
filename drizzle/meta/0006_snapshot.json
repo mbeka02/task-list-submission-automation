@@ -1,0 +1,709 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "c1fa2023-9edd-4da5-9e15-33758bde6bf5",
+  "prevId": "1c31760a-5937-44c6-a286-fc203130a6dc",
+  "tables": {
+    "brief_entry": {
+      "name": "brief_entry",
+      "columns": {
+        "briefId": {
+          "name": "briefId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "senderIdentityKey": {
+          "name": "senderIdentityKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observationKey": {
+          "name": "observationKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "brief_distinct_sender": {
+          "name": "brief_distinct_sender",
+          "columns": [
+            "briefId",
+            "senderIdentityKey"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "brief_entry_briefId_daily_brief_id_fk": {
+          "name": "brief_entry_briefId_daily_brief_id_fk",
+          "tableFrom": "brief_entry",
+          "tableTo": "daily_brief",
+          "columnsFrom": [
+            "briefId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "brief_entry_observationKey_message_observation_id_fk": {
+          "name": "brief_entry_observationKey_message_observation_id_fk",
+          "tableFrom": "brief_entry",
+          "tableTo": "message_observation",
+          "columnsFrom": [
+            "observationKey"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "brief_entry_briefId_position_pk": {
+          "columns": [
+            "briefId",
+            "position"
+          ],
+          "name": "brief_entry_briefId_position_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "brief_valid_position": {
+          "name": "brief_valid_position",
+          "value": "\"brief_entry\".\"position\" >= 0"
+        },
+        "brief_valid_entry": {
+          "name": "brief_valid_entry",
+          "value": "json_valid(\"brief_entry\".\"payload\") AND coalesce(json_extract(\"brief_entry\".\"payload\", '$.timeliness') IN ('on_time', 'late'), 0)"
+        }
+      }
+    },
+    "daily_brief": {
+      "name": "daily_brief",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "appId": {
+          "name": "appId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "businessDate": {
+          "name": "businessDate",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sourceChatId": {
+          "name": "sourceChatId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destinationChatId": {
+          "name": "destinationChatId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "captureThroughMs": {
+          "name": "captureThroughMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observedAtMs": {
+          "name": "observedAtMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "inputFingerprint": {
+          "name": "inputFingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "policyVersion": {
+          "name": "policyVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "templateVersion": {
+          "name": "templateVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "promptVersion": {
+          "name": "promptVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "schemaVersion": {
+          "name": "schemaVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outputMode": {
+          "name": "outputMode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'doc'"
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'input_frozen'"
+        }
+      },
+      "indexes": {
+        "brief_business_key": {
+          "name": "brief_business_key",
+          "columns": [
+            "appId",
+            "businessDate",
+            "sourceChatId",
+            "destinationChatId",
+            "revision"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "brief_valid_revision": {
+          "name": "brief_valid_revision",
+          "value": "\"daily_brief\".\"revision\" >= 1"
+        },
+        "brief_valid_capture": {
+          "name": "brief_valid_capture",
+          "value": "\"daily_brief\".\"captureThroughMs\" >= 0 AND \"daily_brief\".\"observedAtMs\" >= \"daily_brief\".\"captureThroughMs\""
+        },
+        "brief_valid_provider": {
+          "name": "brief_valid_provider",
+          "value": "\"daily_brief\".\"provider\" IN ('gemini', 'deepseek')"
+        },
+        "brief_doc_mode": {
+          "name": "brief_doc_mode",
+          "value": "\"daily_brief\".\"outputMode\" = 'doc'"
+        },
+        "brief_input_state": {
+          "name": "brief_input_state",
+          "value": "\"daily_brief\".\"state\" = 'input_frozen'"
+        }
+      }
+    },
+    "daily_delivery": {
+      "name": "daily_delivery",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "appId": {
+          "name": "appId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "businessDate": {
+          "name": "businessDate",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sourceChatId": {
+          "name": "sourceChatId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destinationChatId": {
+          "name": "destinationChatId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'report'"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "policyVersion": {
+          "name": "policyVersion",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sendUuid": {
+          "name": "sendUuid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "messageId": {
+          "name": "messageId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "timeZone": {
+          "name": "timeZone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'Africa/Nairobi'"
+        },
+        "cutoffMs": {
+          "name": "cutoffMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "textHash": {
+          "name": "textHash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "attemptCount": {
+          "name": "attemptCount",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "firstAttemptMs": {
+          "name": "firstAttemptMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "nextAttemptMs": {
+          "name": "nextAttemptMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "adapterKind": {
+          "name": "adapterKind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "claimToken": {
+          "name": "claimToken",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "claimExpiresMs": {
+          "name": "claimExpiresMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "acknowledgedMs": {
+          "name": "acknowledgedMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "lastError": {
+          "name": "lastError",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "reconciliations": {
+          "name": "reconciliations",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'[]'"
+        }
+      },
+      "indexes": {
+        "delivery_business_key": {
+          "name": "delivery_business_key",
+          "columns": [
+            "appId",
+            "businessDate",
+            "sourceChatId",
+            "destinationChatId",
+            "kind",
+            "revision"
+          ],
+          "isUnique": true
+        },
+        "delivery_send_uuid": {
+          "name": "delivery_send_uuid",
+          "columns": [
+            "sendUuid"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "message": {
+      "name": "message",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "appId": {
+          "name": "appId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sourceChatId": {
+          "name": "sourceChatId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sourceMessageId": {
+          "name": "sourceMessageId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "senderIdentity": {
+          "name": "senderIdentity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "createdMs": {
+          "name": "createdMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updatedMs": {
+          "name": "updatedMs",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "deleted": {
+          "name": "deleted",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "message_app_source_id": {
+          "name": "message_app_source_id",
+          "columns": [
+            "appId",
+            "sourceMessageId"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "message_observation": {
+      "name": "message_observation",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "messageKey": {
+          "name": "messageKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "observation_message_version": {
+          "name": "observation_message_version",
+          "columns": [
+            "messageKey",
+            "fingerprint"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "message_observation_messageKey_message_id_fk": {
+          "name": "message_observation_messageKey_message_id_fk",
+          "tableFrom": "message_observation",
+          "tableTo": "message",
+          "columnsFrom": [
+            "messageKey"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "report_entry": {
+      "name": "report_entry",
+      "columns": {
+        "deliveryId": {
+          "name": "deliveryId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "payload": {
+          "name": "payload",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observationKey": {
+          "name": "observationKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "senderIdentityKey": {
+          "name": "senderIdentityKey",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "report_distinct_sender": {
+          "name": "report_distinct_sender",
+          "columns": [
+            "deliveryId",
+            "senderIdentityKey"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "report_entry_deliveryId_daily_delivery_id_fk": {
+          "name": "report_entry_deliveryId_daily_delivery_id_fk",
+          "tableFrom": "report_entry",
+          "tableTo": "daily_delivery",
+          "columnsFrom": [
+            "deliveryId"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "report_entry_observationKey_message_observation_id_fk": {
+          "name": "report_entry_observationKey_message_observation_id_fk",
+          "tableFrom": "report_entry",
+          "tableTo": "message_observation",
+          "columnsFrom": [
+            "observationKey"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "report_entry_deliveryId_position_pk": {
+          "columns": [
+            "deliveryId",
+            "position"
+          ],
+          "name": "report_entry_deliveryId_position_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

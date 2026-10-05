@@ -88,6 +88,15 @@ function optionalString(value: unknown): boolean {
  * The returned operation obtains user credentials and reads history on demand.
  */
 export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
+  const { readHistory } = createHistoryReader(options, "names");
+  return { readSubmissionHistory: readHistory };
+}
+
+/** Internal traversal shared by the two fixed capture windows, not an arbitrary-cutoff API. */
+export function createHistoryReader(
+  options: HistoryReaderOptions,
+  purpose: "names" | "brief",
+) {
   const http = defaultHttpInstance.create({
     timeout: 15_000,
     maxRedirects: 0,
@@ -123,16 +132,17 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
     });
 
   /**
-   * At 10:01 or later, read main-post history covering the entire Nairobi 10:00 minute.
+   * Read main-post history after the configured fixed names/brief capture boundary.
    * Query bounds are padded; the evaluator applies the exact millisecond cutoff.
    * Merge overlaps to the latest observed version and block conflicting source evidence.
    * Provider/credential failures return sanitized incomplete/unavailable outcomes.
    */
-  async function readSubmissionHistory(
-    input: HistoryReadInput,
-  ): Promise<HistoryScan> {
+  async function readHistory(input: HistoryReadInput): Promise<HistoryScan> {
     const fromMs = Date.parse(`${input.businessDate}T00:00:00.000+03:00`);
-    const throughMs = Date.parse(`${input.businessDate}T10:01:00.000+03:00`);
+    const boundary = purpose === "names" ? "10:01" : "10:15";
+    const throughMs = Date.parse(
+      `${input.businessDate}T${boundary}:00.000+03:00`,
+    );
     const messages: SubmissionObservation[] = [];
     const messagePositions = new Map<string, number>();
     const sourceIdentities = new Map<string, SubmissionObservation>();
@@ -477,5 +487,5 @@ export function createSubmissionHistoryReader(options: HistoryReaderOptions) {
       );
     }
   }
-  return { readSubmissionHistory };
+  return { readHistory };
 }

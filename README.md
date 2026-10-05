@@ -36,7 +36,7 @@ Only supported text and rich-text task lists posted in the main conversation cou
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
-The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Scheduling and editable Doc publishing remain later slices.
+The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. Scheduling remains a later slice; no worker command activates this path yet.
 
 ## System design
 
@@ -93,8 +93,8 @@ flowchart TB
     GEMINI["Gemini · official SDK<br/>Minimal thinking · one attempt"]:::provider
     DEEPSEEK["DeepSeek · native fetch<br/>Thinking disabled · one attempt"]:::provider
     VALIDATE["Shared draft validation<br/>Reference coverage · limits · safe failures"]:::worker
-    DOC["Planned editable Lark Doc<br/>Professional layout · AI-generated footer"]:::planned
-    LINK["Planned Doc-link persistence + delivery<br/>Store link; Doc body stays outside SQLite"]:::planned
+    DOC["Private native Lark Doc<br/>Write · verify content · verify editor access"]:::lark
+    LINK["Saved Doc link + existing delivery ledger<br/>Claims · stable UUID · acknowledgement"]:::worker
     MANAGEMENT["MANAGEMENT GROUP<br/>Brief supplements the names report"]:::lark
 
     SOURCE_AI --> CAPTURE
@@ -105,9 +105,9 @@ flowchart TB
     SELECT -->|Select one| DEEPSEEK
     GEMINI --> VALIDATE
     DEEPSEEK --> VALIDATE
-    VALIDATE -.-> DOC
-    DOC -.-> LINK
-    LINK -.-> MANAGEMENT
+    VALIDATE --> DOC
+    DOC --> LINK
+    LINK --> MANAGEMENT
 
     classDef lark fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px;
     classDef worker fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
@@ -116,7 +116,7 @@ flowchart TB
     classDef planned fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-width:2px,stroke-dasharray:5 4;
 ```
 
-**Legend:** blue = Lark; green = implemented library modules; purple = frozen input storage; orange = interchangeable model adapters; gray/dashed = planned integration. The brief path is not yet scheduled or published. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
+**Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The brief path is implemented as opt-in library operations and is not yet scheduled or enabled in the worker CLI. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
 
 History reads use the approved user's access because the source is an external group. Sending uses the approved app bot and explicit destination scope. Both stay bound to the same app ID; neither falls back to another account or group.
 
@@ -159,7 +159,7 @@ The ledger has **six business tables** plus Drizzle's migration journal. [The Dr
 | `message_observation` | Preserve an immutable version the worker actually observed | `id`, `messageKey`, `fingerprint`, JSON `payload` with source content, normalized text, observation time and detector provenance |
 | `daily_delivery` | Freeze one report or reminder and track its delivery/recovery | Identity/scope: `id`, `appId`, `businessDate`, `sourceChatId`, `destinationChatId`, `kind`, `revision`; frozen content: `policyVersion`, `text`, `sendUuid`, `timeZone`, `cutoffMs`, `textHash`; lifecycle: `state`, `messageId`, `attemptCount`, `firstAttemptMs`, `nextAttemptMs`, `adapterKind`, `claimToken`, `claimExpiresMs`, `acknowledgedMs`, `lastError`, JSON `reconciliations` |
 | `report_entry` | Snapshot each distinct submitter and the exact evidence used in a report | `deliveryId`, `position`, JSON `payload` with identity/name/evidence, `observationKey`, `senderIdentityKey` |
-| `daily_brief` | Freeze one optional brief input per scoped date/revision | Scope/ID, revision, capture/observation times, input fingerprint, policy/template/prompt/schema versions, provider/model, `outputMode=doc`, immutable `state=input_frozen`; generation state/kind, attempt reservations/outcomes/usage, original deadline, claim/backoff, safe error and content hash |
+| `daily_brief` | Freeze one optional brief input per scoped date/revision | Scope/ID, revision, capture/observation times, input fingerprint, policy/template/prompt/schema versions, provider/model, `outputMode=doc`, immutable `state=input_frozen`; generation state/kind, attempts/usage, deadline and claim/backoff; publication state/claim, Doc URL/hash/revision, write tokens, staging configuration and announcement delivery FK |
 | `brief_entry` | Ordered distinct brief membership, including labelled late submissions | `briefId`, `position`, `senderIdentityKey`, required `observationKey`, JSON `payload` with name/identity, original send time, timeliness and normalized source text |
 
 A reminder has a `daily_delivery` record and no report entries. A zero-submission report also has no entries. Later name changes or message edits do not alter a frozen report. Observations are evidence captured by this worker, not a complete Lark edit history. Ordinary unrelated group posts are not stored as new business records.
@@ -217,7 +217,7 @@ erDiagram
 
 The ERD shows selected columns; the table above lists the full schema. `PK` = primary key, `FK` = foreign key, `UK` = unique key; a circle means optional and a crow's foot means many. Entry positions form a composite primary key with `deliveryId`. New report entries link to one observation; that link remains nullable to support older records. Colours distinguish source messages (blue), observations (green), deliveries (purple) and report entries (amber).
 
-The brief adds separate membership because its 10:15 capture can include late submissions and newer observations. Repeat preparation returns the same job/input even after source edits or configuration changes. Names-report evidence retains its original detector provenance. These tables store **source task lists** and generation metadata, not generated Doc content. `generationState=content_ready` means an in-memory handoff is prepared, not that a Doc has been published. Doc links and publishing state will be added in later slices.
+The brief adds separate membership because its 10:15 capture can include late submissions and newer observations. Repeat preparation returns the same job/input even after source edits or configuration changes. Names-report evidence retains its original detector provenance. These tables store **source task lists** and generation metadata, not generated Doc content. `generationState=content_ready` means an in-memory handoff is prepared, not that a Doc has been published. Publication state, the Doc URL, canonical hash, acknowledged revision and write-operation tokens are stored separately. `publicationState=published` means the verified Doc has a frozen link announcement; inspect its delivery state to see whether Lark acknowledged that message.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"lineColor":"#64748b","fontFamily":"sans-serif"}}}%%
@@ -225,6 +225,7 @@ erDiagram
     direction LR
     message_observation ||..o{ brief_entry : "supports exact input"
     daily_brief ||--o{ brief_entry : "contains distinct people"
+    daily_delivery o|..o{ daily_brief : "announces saved Doc"
     message_observation {
         TEXT id PK
         TEXT payload "original evidence"
@@ -234,6 +235,16 @@ erDiagram
         TEXT businessDate
         TEXT inputFingerprint
         TEXT state "input_frozen"
+        TEXT documentUrl
+        TEXT publicationState
+        TEXT announcementDeliveryId FK
+    }
+    daily_delivery {
+        TEXT id PK
+        TEXT kind "brief / report / reminder"
+        TEXT text "link-only for briefs"
+        TEXT sendUuid UK
+        TEXT state
     }
     brief_entry {
         TEXT briefId PK, FK
@@ -247,6 +258,7 @@ erDiagram
     class message_observation evidence
     class daily_brief brief
     class brief_entry brief
+    class daily_delivery evidence
 ```
 
 Green reuses existing evidence; indigo shows the new brief tables. Brief entries always reference exact evidence and use `(briefId, position)` as their composite primary key.
@@ -265,7 +277,8 @@ Green reuses existing evidence; indigo shows the new brief tables. Brief entries
 | `brief_business_key`: unique `(appId, businessDate, sourceChatId, destinationChatId, revision)` | One brief job per scoped date/revision |
 | `brief_entry` primary key `(briefId, position)` and unique `(briefId, senderIdentityKey)` | Ordered, distinct brief membership |
 | Required brief entry → brief and entry → observation foreign keys | Every frozen input retains its job and exact source evidence |
-| Brief SQL checks for revision, capture times, provider, Doc mode, input state, position and JSON timeliness | Reject invalid brief storage values |
+| Brief SQL checks for revision, capture times, provider, Doc mode, generation state/attempts, publication state, hash/revision, claim pairs, write-token JSON, verified references and entry position/timeliness | Reject invalid operational metadata; a verified Doc requires its URL/hash/revision |
+| Optional brief → announcement delivery foreign key | A saved link announcement references an existing durable delivery |
 | Foreign keys: observation → message; entry → delivery; entry → observation (nullable) | Referenced records must exist; deletions do not cascade |
 
 SQLite enforces primary keys, unique indexes, `NOT NULL` columns and enabled foreign keys. Core delivery state values and JSON shapes, calendar rules, scope checks and safe lifecycle transitions are validated by the application. Brief tables additionally declare explicit SQL `CHECK` constraints; Drizzle's TypeScript enums alone do **not** create those checks. Nullable evidence/audit columns preserve migration compatibility; incomplete legacy records cannot automatically send.
@@ -330,20 +343,33 @@ To select DeepSeek, change `provider` to `'deepseek'` and supply `DEEPSEEK_API_K
 
 Load `.env` through Node's `--env-file-if-exists=.env` flag in the calling process; the adapter does not read files. Requests contain only supplied template/instructions and opaque reference/task-text pairs. Keep names, identity tuples, date, ordering and late labels in the application. The result is either a validated structured draft with nullable usage counters, or a classified permanent/transient/cancelled failure. Unknown usage is not zero; output tokens include reasoning and must not have thinking tokens added again.
 
-Each invocation makes at most **one** request: Gemini uses its official SDK with minimal thinking and retries disabled; DeepSeek uses native `fetch` with JSON mode and thinking explicitly disabled. Both use a fixed official endpoint and a timeout of 15 seconds or less, with caller cancellation. Limits: 100 input entries, 64 KiB of serialized UTF-8 template/instructions/entry data, 4,096 output tokens, summaries up to 400 Unicode code points and up to five notes of 240 code points. Notes must cite known references; every input reference must appear exactly once. Validation does not establish factual faithfulness. The S10 coordinator owns retries, fallback and durable reservations; Doc publishing remains a later slice.
+Each invocation makes at most **one** request: Gemini uses its official SDK with minimal thinking and retries disabled; DeepSeek uses native `fetch` with JSON mode and thinking explicitly disabled. Both use a fixed official endpoint and a timeout of 15 seconds or less, with caller cancellation. Limits: 100 input entries, 64 KiB of serialized UTF-8 template/instructions/entry data, 4,096 output tokens, summaries up to 400 Unicode code points and up to five notes of 240 code points. Notes must cite known references; every input reference must appear exactly once. Validation does not establish factual faithfulness. The S10 coordinator owns retries, fallback, durable reservations and opt-in Doc publication.
 
 For the current **free-tier demo**, use synthetic, non-confidential input only; [Google's unpaid-service terms](https://ai.google.dev/gemini-api/terms) govern data processing. API-key presence does not prove model access or quota. Tests exercise both real adapters against local HTTP fixtures with synthetic credentials and no live calls. No paid-tier or live employee-data setup is implied.
 
 ### Bounded brief generation and fallback
 
-`openBriefCoordinator({ ...briefLedgerOptions, generator, template, instructions, clock? })` exposes `completeDailyBrief({ briefId, now })`, `getBrief(briefId)` and `close()`. Call it with an already-frozen brief and matching provider/model and policy/template/prompt/schema versions. The worker CLI does not invoke it yet.
+`openBriefCoordinator({ ...briefLedgerOptions, generator, template, instructions, clock?, docPublishing?, transport? })` exposes `completeDailyBrief({ briefId, now })`, `getBrief(briefId)`, `getDelivery(id)` and `close()`. Call it with an already-frozen brief and matching provider/model and policy/template/prompt/schema versions. The worker CLI does not invoke it yet.
 
 - Reserve at most **two** model attempts before networking, within **45 seconds** from the original start. Each request lasts at most 15 seconds or the remaining budget. Restart preserves consumed reservations and the deadline.
 - Retry only transient failures, once. A fitting `Retry-After` is persisted and honored; otherwise the default delay is one second. Permanent, refused, truncated or invalid output goes directly to fallback.
 - Fallback retains every submitter and late label, quoting source extracts of at most 400 Unicode characters with an explicit abbreviation flag and footer **“AI unavailable — prepared from submitted task lists.”** Oversize input bypasses the model. Complete empty captures use a truthful non-AI notice; incomplete captures cannot be frozen.
 - Return document content **in memory only**. SQLite retains hash, kind, attempts, nullable usage and recovery state. Lost AI content requires review; deterministic fallback/empty content can be reconstructed without a model call. Restored storage stays paused.
 
-Generation and publication are separate stages: `ready` does not create a Doc or send a message. The future publisher must consume the returned content in the same invocation and persist only the verified Doc reference.
+Without `docPublishing`, `ready` returns an in-memory handoff and performs no Doc or message operations. With publication configured, the same invocation writes that body remotely and returns the saved reference instead.
+
+### Editable Doc publication
+
+Configure `docPublishing` with the approved app secret, private `stagingFolderToken` and tenant `documentBaseUrl` ending in `/docx/`; inject the existing scoped app-bot `transport` for announcements. Source reads continue using user OAuth. Production folder authorization, app membership in management and a private live appearance/access check remain deployment gates.
+
+1. Persist a fenced publication claim and canonical content hash, then create a Doc in the selected staging folder. Save its acknowledged URL before writing.
+2. Require closed link access and restricted collaborators before sending content. Write native headings and bullets in batches of at most 50 blocks, recording each operation token beforehand. Names are bold, late posts are labelled, the heading uses a blue accent, and the closing note is muted and italic. Omit empty Notes.
+3. Read every block page at a pinned revision. Verify the hierarchy, order, text and formatting against the canonical hash, ignoring benign server defaults. Confirm the revision stayed unchanged.
+4. Establish and read back management-group **edit** access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and stable-UUID retries. Without a transport, the announcement remains pending.
+
+SQLite and backups retain the URL, hash, revision, operation tokens and recovery/delivery metadata, **never generated text or native block payloads**. The staging folder must be approved and private, including inherited permissions; runtime checks do not replace that setup review. Fixtures prove HTTP behavior, not tenant entitlement or actual Lark appearance.
+
+Unknown creation requires review and never creates a replacement. A known Doc can be read back on restart: complete matching content can finish access/link publication; incomplete, changed or unreadable content remains for review. Recovery never appends or rewrites content. Once publication is recorded, retries use only the saved announcement and preserve human edits. Restore markers, expired claims and changed staging configuration block outbound mutations. Publication review does not automatically regenerate an AI draft, change providers or fall back to a full-text message.
 
 ### Configure a preview worker
 
@@ -422,7 +448,8 @@ Each phase/slice starts on its own branch from current `main`. Use coherent, pur
 | [src/evaluate-submissions.ts](src/evaluate-submissions.ts) | Task-list classification, names and distinct sender selection |
 | [src/submission-history.ts](src/submission-history.ts) | Paginated, bounded Lark history reads |
 | [src/brief-submissions.ts](src/brief-submissions.ts) | Optional brief input capture, shared validity rules and late labels; not yet scheduled |
-| [src/brief-coordinator.ts](src/brief-coordinator.ts) | Durable bounded generation, fenced recovery and source fallback; memory-only content handoff |
+| [src/brief-coordinator.ts](src/brief-coordinator.ts) | Bounded generation, source fallback, fenced Doc publication and announcement recovery |
+| [src/lark-brief-doc.ts](src/lark-brief-doc.ts) | App-only native Doc rendering, bounded SDK calls, canonical readback and editor access |
 | [src/brief-content.ts](src/brief-content.ts) | Document-input and operational attempt types |
 | [src/brief-generator.ts](src/brief-generator.ts) | Shared provider contract and strict input/output validation |
 | [src/gemini-brief-generator.ts](src/gemini-brief-generator.ts) | Single-attempt Gemini SDK adapter, cancellation, usage and safe failure classification |

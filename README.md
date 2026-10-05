@@ -36,6 +36,8 @@ Only supported text and rich-text task lists posted in the main conversation cou
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
+The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. This module is not yet connected to scheduled work; generation, brief persistence and editable Doc publishing are later slices.
+
 ## System design
 
 One Node.js worker coordinates the workflow and stores its ledger in a dedicated SQLite file. It makes outbound API requests; there is no inbound HTTP API, web framework, Redis or separate database server.
@@ -300,6 +302,7 @@ Each phase/slice starts on its own branch from current `main`. Use coherent, pur
 | --- | --- |
 | [src/evaluate-submissions.ts](src/evaluate-submissions.ts) | Task-list classification, names and distinct sender selection |
 | [src/submission-history.ts](src/submission-history.ts) | Paginated, bounded Lark history reads |
+| [src/brief-submissions.ts](src/brief-submissions.ts) | Optional brief input capture, shared validity rules and late labels; not yet scheduled |
 | [src/user-oauth-credentials.ts](src/user-oauth-credentials.ts) | Private saved grants and durable OAuth renewal |
 | [src/report-ledger.ts](src/report-ledger.ts) | Evidence, report freezing, claims, retries and reconciliation |
 | [src/storage/schema.ts](src/storage/schema.ts) | Drizzle table definitions |

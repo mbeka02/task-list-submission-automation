@@ -192,6 +192,21 @@ function plainText(
 export function evaluateSubmissions(
   input: SubmissionInput,
 ): SubmissionEvaluation {
+  return evaluateCurrentObservations(input, "names");
+}
+
+/** Internal S7 classification with the brief window; identity/format rules match S1. */
+export function evaluateBriefObservations(
+  input: SubmissionInput,
+): SubmissionEvaluation {
+  return evaluateCurrentObservations(input, "brief");
+}
+
+/** Apply the same validity and deduplication rules within either fixed output window. */
+function evaluateCurrentObservations(
+  input: SubmissionInput,
+  purpose: "names" | "brief",
+): SubmissionEvaluation {
   const date = new Date(`${input.businessDate}T12:00:00.000Z`);
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate) ||
@@ -206,8 +221,9 @@ export function evaluateSubmissions(
     input.policy.publicHolidays.includes(input.businessDate);
   // This seam's approved zone is Nairobi (UTC+03:00, without daylight saving).
   const start = Date.parse(`${input.businessDate}T00:00:00.000+03:00`);
-  // The whole displayed 10:00 minute qualifies; 10:01 is the exclusive boundary.
-  const cutoff = Date.parse(`${input.businessDate}T10:01:00.000+03:00`);
+  // Windows affect eligibility only; brief timeliness is labelled separately at S7.
+  const boundary = purpose === "names" ? "10:01" : "10:15";
+  const cutoff = Date.parse(`${input.businessDate}T${boundary}:00.000+03:00`);
   // Keep a decision for every input, including exclusions and review issues.
   const decisions = input.messages.map<SubmissionDecision>((message) => {
     if (

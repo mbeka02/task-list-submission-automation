@@ -43,7 +43,7 @@ function frozenLedger(
       businessDate: "2026-10-01",
       observedAtMs: now,
       fromMs: 1790802000000,
-      throughMs: 1790838000000,
+      throughMs: 1790838060000,
       replyPolicy: "exclude",
       messages: [],
     },

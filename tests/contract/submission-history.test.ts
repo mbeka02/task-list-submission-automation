@@ -44,6 +44,34 @@ const task = {
   },
 };
 
+test("history waits until 10:01 and covers the whole 10:00 minute", async () => {
+  let clock = Date.parse("2026-10-02T07:00:59.999Z");
+  const server = await larkHttpServer(() => ({
+    body: { code: 0, data: { has_more: false, items: [] } },
+  }));
+  const reader = createSubmissionHistoryReader({
+    ...config,
+    getUserAccessToken: async () => grant,
+    httpInstance: server.httpInstance,
+    clock: () => clock,
+  });
+  try {
+    expect(await reader.readSubmissionHistory(request)).toMatchObject({
+      status: "unavailable",
+      reason: "before_cutoff",
+    });
+    expect(server.requests).toEqual([]);
+    clock = Date.parse("2026-10-02T07:01:00.000Z");
+    expect(await reader.readSubmissionHistory(request)).toMatchObject({
+      status: "complete",
+      throughMs: Date.parse("2026-10-02T07:01:00.000Z"),
+    });
+    expect(server.requests[0]?.query.end_time).toBe("1790924461");
+  } finally {
+    await server.close();
+  }
+});
+
 test("a credential source that never answers returns a bounded failure without reading history", async () => {
   const server = await larkHttpServer(() => ({ body: {} }));
   try {
@@ -369,15 +397,15 @@ test("an explicit recall at the same update time excludes the previously observe
   }
 });
 
-test("only main posts at or before the inclusive millisecond cutoff enter the report", async () => {
+test("only main posts before 10:01 enter the report, including the last millisecond of 10:00", async () => {
   const directory = mkdtempSync(join(tmpdir(), "task-list-reader-"));
   const items = [
     { ...task, root_id: task.message_id, thread_id: "omt_root" },
     {
       ...task,
       message_id: "om_at_cutoff",
-      create_time: "1790924400000",
-      update_time: "1790924400000",
+      create_time: "1790924459999",
+      update_time: "1790924459999",
       updated: false,
       sender: {
         ...task.sender,
@@ -388,8 +416,8 @@ test("only main posts at or before the inclusive millisecond cutoff enter the re
     {
       ...task,
       message_id: "om_late",
-      create_time: "1790924400001",
-      update_time: "1790924400001",
+      create_time: "1790924460000",
+      update_time: "1790924460000",
       updated: false,
       sender: {
         ...task.sender,
@@ -453,6 +481,7 @@ test("only main posts at or before the inclusive millisecond cutoff enter the re
 
 test("rich-text and page observation times survive reader-to-ledger preparation", async () => {
   const directory = mkdtempSync(join(tmpdir(), "task-list-reader-"));
+  const now = Date.parse("2026-10-02T07:02:00.000Z");
   let time = now;
   const postContent = JSON.stringify({
     en_us: {
@@ -640,7 +669,7 @@ test("overlapping pages yield one current version and never regress to an older 
 test.each([
   { date: "2026-02-30", time: now, reason: "invalid_business_date" },
   { date: "02/10/2026", time: now, reason: "invalid_business_date" },
-  { date: "2026-10-02", time: now - 60_001, reason: "before_cutoff" },
+  { date: "2026-10-02", time: now - 1, reason: "before_cutoff" },
   { date: "2026-10-02", time: Number.NaN, reason: "invalid_clock" },
 ])(
   "unsafe compilation intervals do not read history: $reason",
@@ -1055,7 +1084,7 @@ test("a task list on the second history page appears once in the frozen report",
       businessDate: "2026-10-02",
       replyPolicy: "exclude",
       fromMs: 1790888400000,
-      throughMs: 1790924400000,
+      throughMs: 1790924460000,
       observedAtMs: now,
       messages: [
         { messageId: "om_discussion" },
@@ -1086,7 +1115,7 @@ test("a task list on the second history page appears once in the frozen report",
           container_id_type: "chat",
           container_id: "oc_source",
           start_time: "1790888399",
-          end_time: "1790924401",
+          end_time: "1790924461",
           sort_type: "ByCreateTimeAsc",
           page_size: "50",
           only_thread_root_messages: "true",
@@ -1102,7 +1131,7 @@ test("a task list on the second history page appears once in the frozen report",
           container_id_type: "chat",
           container_id: "oc_source",
           start_time: "1790888399",
-          end_time: "1790924401",
+          end_time: "1790924461",
           sort_type: "ByCreateTimeAsc",
           page_size: "50",
           only_thread_root_messages: "true",

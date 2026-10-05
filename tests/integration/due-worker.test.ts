@@ -171,13 +171,40 @@ test("09:30 sends one frozen source-group reminder without reading submissions",
   }
 });
 
-test("10:00 compiles once and completed work remains completed after restart", async () => {
+test("the scheduler waits through the 10:00 minute and compiles at 10:01", async () => {
+  const environment = await fixture(Date.parse("2026-10-02T07:00:00.000Z"));
+  const worker = createDueWorker(environment.options);
+  try {
+    for (const time of ["07:00:00.000", "07:00:59.999"]) {
+      const now = Date.parse(`2026-10-02T${time}Z`);
+      environment.setNow(now);
+      expect(await worker.runDueWork({ now })).toMatchObject({
+        reminder: { state: "skipped" },
+        report: { state: "not_due" },
+      });
+      expect(environment.server.requests).toEqual([]);
+    }
+    const now = Date.parse("2026-10-02T07:01:00.000Z");
+    environment.setNow(now);
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "sent", attemptCount: 1 },
+    });
+    expect(
+      environment.server.requests.filter((request) => request.method === "GET"),
+    ).toHaveLength(1);
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
+test("10:01 compiles once and completed work remains completed after restart", async () => {
   const environment = await fixture();
   let worker = createDueWorker(environment.options);
   try {
     await worker.runDueWork({ now: Date.parse("2026-10-02T06:30:00.000Z") });
     worker.close();
-    const now = Date.parse("2026-10-02T07:00:00.000Z");
+    const now = Date.parse("2026-10-02T07:01:00.000Z");
     environment.setNow(now);
     worker = createDueWorker(environment.options);
     expect(await worker.runDueWork({ now })).toMatchObject({
@@ -225,7 +252,7 @@ test("the reminder window is 09:30 inclusive to 10:00 exclusive", async () => {
     environment.setNow(now);
     expect(await worker.runDueWork({ now })).toMatchObject({
       reminder: { state: "skipped" },
-      report: { state: "sent" },
+      report: { state: "not_due" },
     });
     expect(
       environment.server.requests.filter(
@@ -244,14 +271,14 @@ test("the reminder window is 09:30 inclusive to 10:00 exclusive", async () => {
 });
 
 test("weekends and supplied Kenyan holidays suppress both routes without a history read", async () => {
-  const environment = await fixture(Date.parse("2026-10-03T07:00:00.000Z"));
+  const environment = await fixture(Date.parse("2026-10-03T07:01:00.000Z"));
   environment.options.calendar.publicHolidays = ["2026-10-05"];
   const worker = createDueWorker(environment.options);
   try {
     for (const instant of [
-      "2026-10-03T07:00:00.000Z",
-      "2026-10-04T07:00:00.000Z",
-      "2026-10-05T07:00:00.000Z",
+      "2026-10-03T07:01:00.000Z",
+      "2026-10-04T07:01:00.000Z",
+      "2026-10-05T07:01:00.000Z",
     ]) {
       const now = Date.parse(instant);
       environment.setNow(now);
@@ -372,7 +399,7 @@ test("invalid worker clocks or scope cannot start either route", async () => {
 });
 
 test("older missed working dates are surfaced for review instead of bulk read or delivery", async () => {
-  const now = Date.parse("2026-10-06T07:00:00.000Z");
+  const now = Date.parse("2026-10-06T07:01:00.000Z");
   const environment = await fixture(now);
   environment.options.activationDate = "2026-10-01";
   environment.options.calendar.publicHolidays = ["2026-10-05"];
@@ -467,7 +494,7 @@ test("a rejected reminder retries its frozen text and UUID after restart only wh
 });
 
 test("a frozen report retries after restart without another compilation read", async () => {
-  const first = Date.parse("2026-10-02T07:00:00.000Z");
+  const first = Date.parse("2026-10-02T07:01:00.000Z");
   const environment = await fixture(first);
   environment.respondWith((request) =>
     request.method === "POST" && request.path === "/open-apis/im/v1/messages"
@@ -510,7 +537,7 @@ test("a frozen report retries after restart without another compilation read", a
 });
 
 test("incomplete history is visible as blocked work and a later complete read can recover", async () => {
-  const first = Date.parse("2026-10-02T07:00:00.000Z");
+  const first = Date.parse("2026-10-02T07:01:00.000Z");
   const environment = await fixture(first);
   environment.respondWith((request) =>
     request.method === "GET" ? { body: { code: 230020 } } : undefined,
@@ -539,12 +566,12 @@ test("incomplete history is visible as blocked work and a later complete read ca
   }
 });
 
-test("credential delay cannot send a reminder at 10:00 or suppress the now-due report", async () => {
+test("credential delay past the reminder deadline cannot suppress the report due at 10:01", async () => {
   const first = Date.parse("2026-10-02T06:59:59.999Z");
   const environment = await fixture(first);
   environment.respondWith((request) => {
     if (request.path.includes("tenant_access_token"))
-      environment.setNow(Date.parse("2026-10-02T07:00:00.000Z"));
+      environment.setNow(Date.parse("2026-10-02T07:01:00.000Z"));
     return undefined;
   });
   const worker = createDueWorker(environment.options);
@@ -567,7 +594,7 @@ test("credential delay cannot send a reminder at 10:00 or suppress the now-due r
 });
 
 test("overlapping due checks in one worker share a compilation and delivery", async () => {
-  const now = Date.parse("2026-10-02T07:00:00.000Z");
+  const now = Date.parse("2026-10-02T07:01:00.000Z");
   const environment = await fixture(now);
   const worker = createDueWorker(environment.options);
   try {
@@ -649,7 +676,7 @@ test("report credential retrieval crossing midnight cannot post an older report 
 });
 
 test("uncertain reports reuse the UUID within its window then require review", async () => {
-  const first = Date.parse("2026-10-02T07:00:00.000Z");
+  const first = Date.parse("2026-10-02T07:01:00.000Z");
   const environment = await fixture(first);
   environment.respondWith((request) =>
     request.method === "POST" && request.path === "/open-apis/im/v1/messages"
@@ -726,18 +753,18 @@ test("an older uncertain reminder remains visible for review and is never replay
   }
 });
 
-test("a saved pending report uses the current clock after reminder credentials cross 10:00", async () => {
-  const environment = await fixture(Date.parse("2026-10-02T07:00:00.000Z"));
+test("a saved pending report uses the current clock after reminder credentials cross 10:01", async () => {
+  const environment = await fixture(Date.parse("2026-10-02T07:01:00.000Z"));
   const { transport: _unusedTransport, ...previewOptions } =
     environment.options;
   const preview = createDueWorker(previewOptions);
-  await preview.runDueWork({ now: Date.parse("2026-10-02T07:00:00.000Z") });
+  await preview.runDueWork({ now: Date.parse("2026-10-02T07:01:00.000Z") });
   preview.close();
   const first = Date.parse("2026-10-02T06:59:59.999Z");
   environment.setNow(first);
   environment.respondWith((request) => {
     if (request.path.includes("tenant_access_token"))
-      environment.setNow(Date.parse("2026-10-02T07:00:00.000Z"));
+      environment.setNow(Date.parse("2026-10-02T07:01:00.000Z"));
     return undefined;
   });
   const worker = createDueWorker(environment.options);
@@ -780,7 +807,7 @@ test("a failed read crossing midnight returns current-date status and reviewed b
 });
 
 test("a calendar revision cannot hide an older unfinished delivery from reviewed backfill", async () => {
-  const first = Date.parse("2026-10-02T07:00:00.000Z");
+  const first = Date.parse("2026-10-02T07:01:00.000Z");
   const environment = await fixture(first);
   environment.respondWith((request) =>
     request.method === "POST" && request.path === "/open-apis/im/v1/messages"

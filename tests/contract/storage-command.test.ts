@@ -48,7 +48,7 @@ async function fixture() {
       businessDate: "2026-10-02",
       observedAtMs: now,
       fromMs: Date.parse("2026-10-01T21:00:00.000Z"),
-      throughMs: Date.parse("2026-10-02T07:00:00.000Z"),
+      throughMs: Date.parse("2026-10-02T07:01:00.000Z"),
       replyPolicy: "exclude",
       messages: [
         {

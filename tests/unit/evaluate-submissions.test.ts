@@ -519,21 +519,21 @@ test("weekends and explicitly supplied Kenyan holidays are non-working days", ()
   }
 });
 
-test("only original sends on the business date up to exactly 10:00 Nairobi count", () => {
+test("original sends through the last millisecond of 10:00 Nairobi count, but 10:01 does not", () => {
   const result = evaluate([
     {
       ...message,
       observationId: "obs_boundary",
       messageId: "om_boundary",
-      createdMs: Date.parse("2026-10-01T07:00:00.000Z"),
+      createdMs: Date.parse("2026-10-01T07:00:59.999Z"),
       updatedMs: Date.parse("2026-10-01T07:01:00.000Z"),
     },
     {
       ...message,
       observationId: "obs_late",
       messageId: "om_late",
-      createdMs: Date.parse("2026-10-01T07:00:00.001Z"),
-      updatedMs: Date.parse("2026-10-01T07:00:00.001Z"),
+      createdMs: Date.parse("2026-10-01T07:01:00.000Z"),
+      updatedMs: Date.parse("2026-10-01T07:01:00.000Z"),
     },
     {
       ...message,

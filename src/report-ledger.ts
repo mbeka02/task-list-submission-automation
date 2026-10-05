@@ -297,7 +297,7 @@ export function openReportLedger(options: LedgerOptions) {
       return blocked(["policy_scope_mismatch"]);
     if (input.scan.status !== "complete") return blocked(["scan_incomplete"]);
     const startMs = Date.parse(`${input.businessDate}T00:00:00.000+03:00`);
-    const cutoffMs = Date.parse(`${input.businessDate}T10:00:00.000+03:00`);
+    const cutoffMs = Date.parse(`${input.businessDate}T10:01:00.000+03:00`);
     if ((options.clock ?? Date.now)() < cutoffMs)
       return blocked(["before_cutoff"]);
     const current = input.scan;
@@ -464,7 +464,7 @@ export function openReportLedger(options: LedgerOptions) {
                   observedAtMs: message.observedAtMs ?? input.scan.observedAtMs,
                   normalizedText: decision.normalizedText,
                   reason: decision.reason,
-                  detectorVersion: "task-list-v1",
+                  detectorVersion: "task-list-v2",
                 },
               })
               .onConflictDoNothing()

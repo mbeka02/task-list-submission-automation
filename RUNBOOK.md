@@ -99,8 +99,10 @@ pnpm delivery status --id <delivery-id>
 
 `status` reads an existing migrated ledger and contacts no Lark endpoint. Preview
 `run` can freeze local work and, with later approved network/credentials, read Lark;
-it never sends. Startup checks recover today. Reminders stop at 10:00 Nairobi and
-reports stop at the next midnight. Older unfinished reports appear in `backfill`
+it never sends. Startup checks recover today. Reports begin compilation at 10:01
+Nairobi and include original sends through 10:00:59.999; posts at 10:01:00.000 or
+later are late. Reminders stop at 10:00, and report retries stop at the next
+midnight. Older unfinished reports appear in `backfill`
 with IDs/states; closed-window uncertain reminders appear in `reminderReviews`.
 Neither list authorizes replay. A running worker prints changed state and its latest
 read/preparation failure; a separate status command cannot recover transient read
@@ -110,7 +112,10 @@ must not be treated as a valid zero-submission day.
 On ambiguous content/name, confirm the source message and sender with Anthony/Joseh.
 Fix the source or approved alias/policy through a reviewed change, then rerun an
 unfrozen date. Names are display data; different scoped IDs are distinct people.
-Do not edit frozen report text, evidence, IDs or UUIDs by hand. Corrections and dated
+The full-minute cutoff uses policy `task-list-v2`; select that version in existing
+configuration when adopting this rule. Earlier frozen reports retain their saved
+cutoff, policy and payload. Do not edit frozen report text, evidence, IDs or UUIDs
+by hand. Corrections and dated
 backfill publication are deferred to separately agreed interfaces.
 
 For an uncertain send, inspect the exact destination, app sender, business date and

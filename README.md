@@ -29,10 +29,10 @@ The workflow replaces manually checking **DB STUDIO EXTERNAL** and compiling the
 | --- | --- |
 | Monday–Friday, excluding reviewed Kenyan public holidays | Eligible working days |
 | 09:30 to just before 10:00 | Prepare the reminder for the source group; allow same-day catch-up |
-| At or after 10:00 | Read that day's messages originally sent from midnight through **10:00 inclusive**, then freeze the management report |
+| At or after 10:01 | Read that day's messages originally sent from midnight through **10:00:59.999 inclusive** (before 10:01), then freeze the management report |
 | Startup and after each completed check | Recover today's unfinished work; default delay is 60 seconds |
 
-Only supported text and rich-text task lists posted in the main conversation count. Thread replies are excluded in v1. The reader uses the latest content it observes during compilation; it does not reconstruct what an edited message looked like exactly at 10:00.
+Only supported text and rich-text task lists posted in the main conversation count. Thread replies are excluded in v1. The reader uses the latest content it observes during compilation; it does not reconstruct what an edited message looked like exactly at the cutoff.
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
@@ -57,7 +57,7 @@ flowchart TB
     TARGETS["Lark destinations<br/>Source: reminder · Management: report"]:::lark
 
     CONFIG --> SCHEDULE
-    SCHEDULE -->|10:00 report due| READER
+    SCHEDULE -->|10:01 report due| READER
     SOURCE -->|Read all history pages| READER
     READER --> EVALUATE
     EVALUATE --> FREEZE
@@ -80,8 +80,8 @@ History reads use the approved user's access because the source is an external g
 
 ### How the workflow runs
 
-1. **Check what is due.** Validate the Nairobi date, activation date and reviewed calendar. Prepare the reminder during its window without reading submissions. At 10:00, begin report compilation if no report is already frozen.
-2. **Read every page.** Fetch the source group's midnight–10:00 history using user OAuth. Preserve message IDs, sender metadata, timestamps and supported content. Partial, denied or failed reads block compilation rather than producing an empty report.
+1. **Check what is due.** Validate the Nairobi date, activation date and reviewed calendar. Prepare the reminder during its window without reading submissions. At 10:01, begin report compilation if no report is already frozen.
+2. **Read every page.** Fetch the source group's history from midnight until the 10:01 boundary using user OAuth. Preserve message IDs, sender metadata, timestamps and supported content. Partial, denied or failed reads block compilation rather than producing an empty report.
 3. **Decide who qualifies.** Normalize text/rich-text content, classify task lists, exclude late/deleted/ineligible posts and deduplicate people by `(app_id, sender_tenant_key, sender_open_id)`. Names are display data. Ambiguous candidates or unresolved qualifying names require review.
 4. **Freeze a consistent report.** In one SQLite write transaction, save relevant observed evidence, the selected entries, exact report text, policy version and a stable send UUID. Either the whole report is committed or none of it is. An existing frozen report is reused; a complete, valid empty scan produces explicit zero-submission text.
 5. **Deliver saved work when activated.** Claim one eligible delivery in SQLite, commit the claim, then make the Lark request outside the transaction. Record the acknowledgement or recovery state. Subsequent attempts use the saved text and UUID, without rereading or recompiling the report.

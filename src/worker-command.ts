@@ -59,7 +59,7 @@ function openWorker(inspect: boolean) {
     activationDate: required("ACTIVATION_DATE"),
     calendar: loadCalendar(required("HOLIDAY_CALENDAR_PATH")),
     policy: {
-      policyVersion: process.env.POLICY_VERSION ?? "task-list-v1",
+      policyVersion: process.env.POLICY_VERSION ?? "task-list-v2",
       replyPolicy: "exclude",
     },
     reminderText,

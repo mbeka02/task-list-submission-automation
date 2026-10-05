@@ -313,7 +313,7 @@ export function createDueWorker(options: DueWorkerOptions) {
         ? deliveryStatus(
             report,
             now,
-            now >= Date.parse(`${businessDate}T10:00:00.000+03:00`),
+            now >= Date.parse(`${businessDate}T10:01:00.000+03:00`),
           )
         : reportIssue?.businessDate === businessDate
           ? {
@@ -323,7 +323,7 @@ export function createDueWorker(options: DueWorkerOptions) {
             }
           : {
               state:
-                now >= Date.parse(`${businessDate}T10:00:00.000+03:00`)
+                now >= Date.parse(`${businessDate}T10:01:00.000+03:00`)
                   ? ("due" as const)
                   : ("not_due" as const),
             },
@@ -358,13 +358,13 @@ export function createDueWorker(options: DueWorkerOptions) {
           now: input.now,
         });
     }
-    // Credential/network work may cross 10:00; evaluate report eligibility using the current clock.
+    // Credential/network work may cross 10:01; evaluate report eligibility using the current clock.
     const reportNow = Math.max(input.now, (options.clock ?? Date.now)());
     status = getStatus({ now: reportNow });
     if (status.status !== "ok") return status;
     if (
       (status.report.state === "due" || status.report.state === "blocked") &&
-      reportNow >= Date.parse(`${status.businessDate}T10:00:00.000+03:00`)
+      reportNow >= Date.parse(`${status.businessDate}T10:01:00.000+03:00`)
     ) {
       const scan = await reader.readSubmissionHistory({
         businessDate: status.businessDate,

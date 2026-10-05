@@ -68,6 +68,7 @@ export async function briefProviderHttpServer(
     },
   );
   return {
+    origin: `http://127.0.0.1:${address.port}`,
     requests,
     origins,
     close: async () => {

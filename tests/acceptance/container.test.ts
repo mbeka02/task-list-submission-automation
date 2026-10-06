@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, test } from "vitest";
 import { createLegacyDatabase } from "../support/legacy-database.js";
 
@@ -487,6 +487,177 @@ acceptance(
 );
 
 const previousImage = process.env.RELEASE_PREVIOUS_IMAGE;
+
+acceptance.each(["gemini", "deepseek"])(
+  "%s brief release retains its Doc reference and independent deliveries across replacement and restore",
+  (provider) => {
+    const environment = fixture();
+    try {
+      const reminder = environment.run(["run", "--once"]).reminder;
+      environment.setNow("2026-10-02T07:15:00.000Z");
+      const options = [
+        ...environment.options,
+        "--mount",
+        `type=bind,src=${resolve("tests/support/brief-release-driver.mjs")},dst=/acceptance/brief-release.mjs,readonly`,
+        "--env",
+        `BRIEF_PROVIDER=${provider}`,
+      ];
+      const run = (mode: string, extra: string[] = [], releaseImage = image) =>
+        JSON.parse(
+          container(
+            [
+              "node",
+              "--import",
+              "/acceptance/clock.mjs",
+              "/acceptance/brief-release.mjs",
+              mode,
+            ],
+            [...options, ...extra],
+            releaseImage,
+          ),
+        );
+      const original = run("publish");
+      expect(original).toMatchObject({
+        status: {
+          report: { state: "sent" },
+          brief: { state: "published", announcement: { state: "sent" } },
+        },
+        saved: {
+          brief: {
+            documentUrl: "https://synthetic.larksuite.com/docx/docRelease",
+            provider,
+            generationKind: "ai",
+            generationAttemptCount: 1,
+            entries: [
+              ["Alice", "on_time"],
+              ["Bob", "late"],
+            ],
+          },
+          reminder: {
+            id: reminder.deliveryId,
+            state: "pending",
+            attemptCount: 0,
+          },
+          report: {
+            state: "sent",
+            text: "2 October 2026\n1. Alice",
+            attemptCount: 1,
+          },
+          announcement: {
+            kind: "brief",
+            state: "sent",
+            text: "Today's brief — 2026-10-02\nhttps://synthetic.larksuite.com/docx/docRelease",
+            attemptCount: 1,
+          },
+        },
+        http: { model: 1, docCreates: 1 },
+        retention: { generatedBodyStored: false, sourceEvidenceStored: true },
+        presentation: {
+          modelTextPresent: true,
+          lateLabelPresent: true,
+          footerPresent: true,
+        },
+      });
+      const replaced = run("resume");
+      expect(replaced.saved).toEqual(original.saved);
+      expect(replaced.http.total).toBe(0);
+      const inspected = environment.run(
+        ["status"],
+        [
+          "--env",
+          "ENABLE_DAILY_BRIEF=true",
+          "--env",
+          "BRIEF_MODE=capture_only",
+          "--env",
+          "BRIEF_ACTIVATION_DATE=2026-10-02",
+          "--env",
+          `BRIEF_PROVIDER=${provider}`,
+          "--env",
+          "GEMINI_MODEL=gemini-3.5-flash-lite",
+          "--env",
+          "DEEPSEEK_MODEL=deepseek-flash",
+          "--env",
+          "BRIEF_TEMPLATE_VERSION=template-v1",
+          "--env",
+          "BRIEF_PROMPT_VERSION=prompt-v1",
+          "--env",
+          "BRIEF_SCHEMA_VERSION=schema-v1",
+        ],
+      );
+      expect(inspected).toMatchObject({
+        outboundEnabled: false,
+        reminder: { deliveryId: reminder.deliveryId, state: "pending" },
+        report: { state: "sent", deliveryId: original.saved.report.id },
+        brief: {
+          state: "published",
+          briefId: original.saved.brief.id,
+          documentUrl: "https://synthetic.larksuite.com/docx/docRelease",
+          announcement: {
+            state: "sent",
+            deliveryId: original.saved.announcement.id,
+          },
+        },
+      });
+      expect(
+        JSON.parse(
+          container(
+            [
+              "node",
+              "dist/storage-command.js",
+              "backup",
+              "--output",
+              "/data/brief-snapshot.sqlite",
+            ],
+            options,
+          ),
+        ),
+      ).toMatchObject({ status: "backed_up" });
+      const snapshot = run("inspect", [
+        "--env",
+        "SQLITE_FILE_PATH=/data/brief-snapshot.sqlite",
+      ]);
+      expect(snapshot.saved).toEqual(original.saved);
+      expect(snapshot.retention).toEqual({
+        generatedBodyStored: false,
+        sourceEvidenceStored: true,
+      });
+      expect(
+        JSON.parse(
+          container(
+            [
+              "node",
+              "dist/storage-command.js",
+              "restore",
+              "--backup",
+              "/data/brief-snapshot.sqlite",
+              "--output",
+              "/data/brief-restored.sqlite",
+            ],
+            options,
+          ),
+        ),
+      ).toMatchObject({ status: "restored", restoreReviewRequired: true });
+      const restored = run("resume", [
+        "--env",
+        "SQLITE_FILE_PATH=/data/brief-restored.sqlite",
+      ]);
+      expect(restored).toMatchObject({
+        status: {
+          status: "paused",
+          reason: "restore_review_required",
+          brief: { state: "blocked" },
+        },
+        http: { total: 0 },
+        retention: { generatedBodyStored: false, sourceEvidenceStored: true },
+      });
+      expect(restored.saved).toEqual(original.saved);
+    } finally {
+      environment.close();
+    }
+  },
+  60_000,
+);
+
 const rollbackAcceptance =
   process.env.RUN_DOCKER_ACCEPTANCE === "true" && previousImage
     ? test

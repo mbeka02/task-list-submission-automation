@@ -18,6 +18,7 @@ A TypeScript worker that identifies who posted a daily task list in Lark and pre
 - [Tech stack](#tech-stack)
 - [Installation and setup](#installation-and-setup)
 - [Usage and operations](#usage-and-operations)
+- [Observability](#observability)
 - [Development and verification](#development-and-verification)
 - [Code map](#code-map)
 
@@ -298,6 +299,7 @@ Connections use WAL, `synchronous=FULL` and a five-second busy timeout. Report a
 | Brief generation | Official `@google/genai` **2.27.0** and native `fetch` | Optional Gemini/DeepSeek adapters; no scheduled generation yet |
 | Persistence | SQLite via `better-sqlite3` | Local durable ledger |
 | Database tooling | Drizzle ORM + Drizzle Kit | Typed queries and versioned SQL migrations |
+| Structured logging | Pino **10.4.0** | Correlated JSON events, timings and safe operational metadata |
 | Verification | Vitest | Unit, HTTP contract, SQLite integration and container acceptance tests |
 | Formatting / linting | Biome | Code checks |
 | Packaging | Docker + Docker Compose | Non-root local release with persistent volumes |
@@ -428,6 +430,27 @@ pnpm delivery status --id <delivery-id>
 
 Unresolved reads or candidates are not valid zero-submission days. Leave uncertain sends unresolved until evidence supports a decision; reconciliation itself never sends. Retention/pruning, off-server backup scheduling, restore release and production activation are not configured. The manual management list remains the fallback.
 
+## Observability
+
+The worker writes **newline-delimited Pino JSON to stderr**; its existing command-result JSON stays on stdout. `LOG_LEVEL=info` is the default: significant outcomes, state changes and a worker heartbeat on the first completed check after ten quiet minutes. `debug` adds every check and attempt start. Accepted levels are `fatal`, `error`, `warn`, `info`, `debug`, `trace` and `silent`; invalid values block startup.
+
+Every event carries `service`, UTC `time`, `level`, `runId` and `entryPoint`. Each check has a fresh run ID; nested history, generation, Doc and delivery operations retain it. Entry points distinguish one-shot runs, scheduler startup/periodic checks, status inspection and direct library calls. Business dates remain Nairobi dates; `durationMs` measures elapsed time independently of the business clock.
+
+Worker summaries distinguish older names reports (`backfillCount`), older briefs (`briefBackfillCount`) and reminders needing reconciliation (`reviewCount`). `reviewRequired` includes those queues, today's reconciliation/publication review and blocked/paused core work. An unchanged review condition stays quiet between heartbeats; it remains visible in local status.
+
+| Operational question | Events / fields |
+| --- | --- |
+| Did today's work finish, and is the worker alive? | `worker_check_completed`: status, reminder/report/brief states, reasons, backfill/review counts; info heartbeat every ten minutes |
+| Where did time go? | `history_read_completed`, `model_attempt_completed`, `document_step_completed`, `delivery_completed`: duration, capture kind / provider / Doc stage |
+| Why did generation degrade? | Model attempt number, classified reason, retry delay and nullable token counters; `brief_content_prepared` with `kind=fallback` |
+| Does delivery/publication need review? | `delivery_completed` with uncertain/failed state; `document_step_failed` stage; `brief_completed` with review-required reason and opaque job ID |
+
+Fields are allowlisted. Logs omit names, sender/chat/message IDs, source/generated text, prompts, Doc URLs/tokens, credentials and vendor error bodies/stacks. Unknown reasons become `unclassified`; add new reviewed reason codes to the allowlist when introducing them. Synchronous logging failures cannot change a delivery's durable acknowledgement or authorize a retry. SDK body/header logging stays disabled.
+
+Library callers opt in with `logger: createOperationalLogger()` and an optional approved `entryPoint` when opening `createDueWorker`, `openReportLedger` or `openBriefCoordinator`. Without a logger, these APIs remain quiet. Use a logger without sensitive custom bindings.
+
+Capture remains your choice: an agent can collect the stderr stream from the current Docker log driver. Its existing rotation remains 10 MB × three files. Filter by stream/service and parse the JSON inside Docker's envelope; stdout contains operator results, not the telemetry schema. No hosted collector, exporter, metrics endpoint, distributed tracing or alert delivery is configured. Once capture is chosen, use these events to define completion/fallback alerts and latency dashboards; genuine histogram metrics and distributed traces need separate instrumentation. See [capture and diagnosis](RUNBOOK.md#capture-and-diagnose-operational-logs) and the [Pino API](https://github.com/pinojs/pino/blob/main/docs/api.md).
+
 ## Development and verification
 
 ```bash
@@ -472,5 +495,6 @@ Each phase/slice starts on its own branch from current `main`. Use coherent, pur
 | [src/storage/schema.ts](src/storage/schema.ts) | Drizzle table definitions |
 | [src/lark-delivery.ts](src/lark-delivery.ts) | Scoped app-bot HTTP adapter |
 | [src/due-worker.ts](src/due-worker.ts) | Working-day scheduling and recovery decisions |
+| [src/observability.ts](src/observability.ts) | Pino setup, asynchronous run correlation and operational metadata allowlist |
 | [src/worker-command.ts](src/worker-command.ts), [src/delivery-command.ts](src/delivery-command.ts), [src/storage-command.ts](src/storage-command.ts) | Operator interfaces |
 | [Dockerfile](Dockerfile), [compose.yaml](compose.yaml) | Local image and container configuration |

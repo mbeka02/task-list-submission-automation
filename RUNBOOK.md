@@ -161,6 +161,55 @@ Free-tier demonstrations use synthetic input unless the operator explicitly
 approves a specific real-data sample; that approval does not activate production.
 No publishing configuration or live permission is implied by enabling capture.
 
+## Capture and diagnose operational logs
+
+The first questions are: did today's work finish, where was it slow, why did it
+fall back or stop, and does an operator need to review it? Telemetry on stderr
+answers those questions; stdout retains the operator-command result contract.
+`LOG_LEVEL=info` includes state changes and a ten-minute liveness heartbeat.
+Use `debug` temporarily for every check and attempt start; restore `info` afterward.
+
+For a locally authorized preview run, separate the streams:
+
+```bash
+mkdir -p data
+chmod 700 data
+(umask 077; LOG_LEVEL=debug pnpm worker run --once >data/worker-result.json 2>data/worker-events.ndjson)
+```
+
+pnpm may add its own script banner to stderr. Collect records with
+`service=task-list` and a stable `event`; the built container runs Node directly
+and produces the application stream without that banner. The Docker `json-file`
+envelope preserves `stream=stderr`; configure a future collector to parse its
+`log` field as JSON and exclude stdout command results. Rotation is already
+10 MB × three files. Rotation is not off-server capture or a backup.
+
+Find a `worker_check_completed`, `delivery_completed` or `brief_completed` for the
+Nairobi business date, then filter all records by its `runId`. `entryPoint`
+distinguishes startup, periodic, one-shot and direct API work. Use opaque
+`deliveryId`/`briefId` to connect retries across different run IDs and inspect
+durable state with the existing status commands. Missing logs do not prove a
+delivery failed or authorize replay; SQLite and the acknowledged Lark record
+remain authoritative.
+
+| Symptom | First check | Next action |
+| --- | --- | --- |
+| Report blocked | `history_read_completed` reason/code and `report_preparation_blocked` reasons | Check reader authorization, calendar or ambiguous candidates; consult Anthony/Joseh for source/name review |
+| AI fallback | `model_attempt_completed` reason/classification, attempt and retry delay | Check quota/access/model configuration; preserve frozen input and the bounded retry policy |
+| Publication needs review | `document_step_failed` stage and `brief_completed` reason | Verify bot scopes and private Doc/access state; do not create a replacement or overwrite edits |
+| Delivery uncertain/failed | `delivery_completed` reason, attempt and opaque delivery ID | Follow the reviewed delivery procedure below; compare with Lark evidence before reconciliation |
+| Worker appears idle | Latest ten-minute heartbeat plus container process/restart state | Check local configuration/storage; escalate server access to the server administrator |
+| Slow work | Operation `durationMs` under the same run ID | Separate history, model, Doc stage and delivery time; retries/backoff also contribute to total check time |
+
+Do not add raw provider exceptions, source messages, generated text or identifiers
+to logs while diagnosing. Unknown reasons intentionally become `unclassified`.
+Nullable usage means unavailable, not zero. Synchronous sink failures are best-effort
+and must not undo business work. Restrict log access and set retention with the
+chosen collector. External calls are correlated within this process; no outbound
+trace propagation/exporter is installed. Metrics histograms and alert thresholds
+await a selected backend and an agreed delivery grace period; no active alerts
+are implied by this logging change.
+
 ## Inspect and recover ordinary work
 
 ```bash

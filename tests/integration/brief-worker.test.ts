@@ -16,6 +16,7 @@ import {
   type CapturedLarkRequest,
   larkHttpServer,
 } from "../support/lark-http-server.js";
+import { logCapture } from "../support/log-capture.js";
 import { scheduledDocFixture } from "../support/scheduled-doc-fixture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -125,6 +126,47 @@ async function setup() {
     },
   };
 }
+
+test("brief capture logs counts and late membership without exporting source content", async () => {
+  const { options } = await setup();
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...options,
+    logger: logs.logger,
+    entryPoint: "worker_once",
+  });
+  cleanups.push(worker.close);
+  expect(await worker.runDueWork({ now: at("10:15:00") })).toMatchObject({
+    brief: { state: "input_frozen" },
+  });
+  expect(logs.events()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: "history_read_completed",
+        captureKind: "brief",
+        status: "complete",
+        entryCount: 2,
+        lateCount: 1,
+      }),
+      expect.objectContaining({
+        event: "brief_input_frozen",
+        businessDate,
+        entryCount: 2,
+        lateCount: 1,
+      }),
+    ]),
+  );
+  expect(new Set(logs.events().map((event) => event.runId)).size).toBe(1);
+  for (const canary of [
+    "Alice",
+    "Bob",
+    "Prepare drawings",
+    "Review estimates",
+    "synthetic-token",
+    "synthetic-secret",
+  ])
+    expect(logs.text()).not.toContain(canary);
+});
 
 test("at 10:15 the worker freezes late-inclusive brief input once without changing the names report cutoff", async () => {
   const { worker, options, server } = await setup();

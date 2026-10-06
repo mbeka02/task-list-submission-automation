@@ -9,6 +9,12 @@ import {
   type SubmissionInput,
 } from "./evaluate-submissions.js";
 import {
+  hasOperationalLogger,
+  type ObservabilityOptions,
+  operationalEvent,
+  withObservedRun,
+} from "./observability.js";
+import {
   dailyBriefs,
   deliveries,
   type EvidenceObservation,
@@ -84,7 +90,7 @@ export type DeliveryTransport = ((
 };
 
 /** SQLite and fixed app/group scope; without a transport, ledger operations cannot contact Lark. */
-export interface LedgerOptions {
+export interface LedgerOptions extends ObservabilityOptions {
   databasePath: string;
   /** Inspect an existing migrated ledger without migrations or writes. */
   readOnly?: boolean;
@@ -633,11 +639,49 @@ export function openReportLedger(options: LedgerOptions) {
     now: number;
     deliveryDeadlineMs?: number;
   }) {
-    try {
-      return await deliverAttempt(input);
-    } catch {
-      return { status: "not_sent" as const, reason: "storage_error" };
-    }
+    return withObservedRun(
+      options,
+      "delivery_api",
+      async () => {
+        const started = performance.now();
+        let result: Awaited<ReturnType<typeof deliverAttempt>>;
+        try {
+          result = await deliverAttempt(input);
+        } catch {
+          result = { status: "not_sent" as const, reason: "storage_error" };
+        }
+        // Diagnostic reads never affect the returned delivery outcome or authorize another send.
+        let delivery: ReturnType<typeof getDelivery> = null;
+        if (hasOperationalLogger()) {
+          try {
+            delivery = getDelivery(input.deliveryId);
+          } catch {
+            /* Storage may be the original failure. */
+          }
+        }
+        operationalEvent(
+          result.status === "failed" ||
+            ("reason" in result && result.reason === "storage_error")
+            ? "error"
+            : result.status === "not_sent"
+              ? "debug"
+              : result.status === "sent"
+                ? "info"
+                : "warn",
+          "delivery_completed",
+          {
+            status: result.status,
+            businessDate: delivery?.businessDate,
+            kind: delivery?.kind,
+            attemptCount: delivery?.attemptCount,
+            reason: "reason" in result ? result.reason : delivery?.lastError,
+            durationMs: Math.round(performance.now() - started),
+          },
+        );
+        return result;
+      },
+      { deliveryId: input.deliveryId },
+    );
   }
 
   /** Recover expired claims, enforce retry eligibility, claim one attempt and persist its outcome. */

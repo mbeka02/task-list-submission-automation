@@ -14,6 +14,7 @@ import {
   scan,
 } from "../support/brief-coordinator-fixtures.js";
 import { briefProviderHttpServer } from "../support/brief-provider-http-server.js";
+import { logCapture } from "../support/log-capture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -49,6 +50,74 @@ function coordinator(databasePath: string, clock = () => start) {
   cleanups.push(instance.close);
   return instance;
 }
+
+test("model failures and fallback are diagnosable without logging provider errors or task content", async () => {
+  const server = await briefProviderHttpServer(() => ({
+    status: 503,
+    body: { error: { code: 503, message: "provider-body-secret-canary" } },
+  }));
+  cleanups.push(server.close);
+  const { databasePath, briefId } = prepared();
+  const logs = logCapture();
+  const worker = openBriefCoordinator({
+    ...config,
+    databasePath,
+    logger: logs.logger,
+    template,
+    instructions,
+    clock: () => start,
+    generator: createBriefGenerator({
+      provider: "gemini",
+      apiKey: "api-key-canary",
+      model: config.model,
+    }),
+  });
+  cleanups.push(worker.close);
+  expect(
+    await worker.completeDailyBrief({ briefId, now: start }),
+  ).toMatchObject({ status: "ready", content: { kind: "fallback" } });
+  expect(logs.events()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: "model_attempt_completed",
+        attempt: 1,
+        status: "failed",
+        provider: "gemini",
+        classification: "transient",
+        reason: "provider_unavailable",
+        durationMs: expect.any(Number),
+      }),
+      expect.objectContaining({
+        event: "model_attempt_completed",
+        attempt: 2,
+        status: "failed",
+      }),
+      expect.objectContaining({
+        event: "brief_content_prepared",
+        kind: "fallback",
+        entryCount: 2,
+        level: "warn",
+      }),
+      expect.objectContaining({
+        event: "brief_completed",
+        status: "ready",
+        briefId,
+        entryPoint: "brief_api",
+      }),
+    ]),
+  );
+  expect(new Set(logs.events().map((event) => event.runId)).size).toBe(1);
+  for (const canary of [
+    "provider-body-secret-canary",
+    "api-key-canary",
+    "Alice",
+    "Bob",
+    "Prepare drawings",
+    template,
+    instructions,
+  ])
+    expect(logs.text()).not.toContain(canary);
+});
 
 test("retries one transient failure then returns source fallback with durable attempts and no stored body", async () => {
   const server = await briefProviderHttpServer(() => ({
@@ -119,6 +188,92 @@ function modelResponse() {
     },
   };
 }
+
+test("successful model telemetry reports nullable token counters without the generated brief", async () => {
+  const server = await briefProviderHttpServer(() => ({
+    body: modelResponse(),
+  }));
+  cleanups.push(server.close);
+  const { databasePath, briefId } = prepared();
+  const logs = logCapture();
+  const worker = openBriefCoordinator({
+    ...config,
+    databasePath,
+    logger: logs.logger,
+    template,
+    instructions,
+    clock: () => start,
+    generator: createBriefGenerator({
+      provider: "gemini",
+      apiKey: "usage-key-canary",
+      model: config.model,
+    }),
+  });
+  cleanups.push(worker.close);
+  expect(
+    await worker.completeDailyBrief({ briefId, now: start }),
+  ).toMatchObject({ status: "ready", content: { kind: "ai" } });
+  expect(logs.events()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: "model_attempt_completed",
+        status: "generated",
+        inputTokens: 100,
+        outputTokens: 50,
+        thinkingTokens: 10,
+        totalTokens: 150,
+      }),
+    ]),
+  );
+  expect(logs.text()).not.toContain("Prepare client drawings");
+  expect(logs.text()).not.toContain("usage-key-canary");
+});
+
+test("unrecognized adapter reasons and extra usage fields cannot become sensitive log data", async () => {
+  const { databasePath, briefId } = prepared();
+  const logs = logCapture();
+  const unsafeUsage = {
+    inputTokens: null,
+    outputTokens: null,
+    thinkingTokens: null,
+    totalTokens: null,
+    taskText: "usage-body-canary",
+  };
+  const worker = openBriefCoordinator({
+    ...config,
+    databasePath,
+    logger: logs.logger,
+    template,
+    instructions,
+    clock: () => start,
+    generator: {
+      generate: async () => ({
+        provider: "gemini",
+        model: config.model,
+        usage: unsafeUsage,
+        status: "failed",
+        classification: "permanent",
+        reason: "private.employee@example.invalid",
+      }),
+    },
+  });
+  cleanups.push(worker.close);
+  expect(
+    await worker.completeDailyBrief({ briefId, now: start }),
+  ).toMatchObject({ status: "ready", content: { kind: "fallback" } });
+  expect(logs.events()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: "model_attempt_completed",
+        reason: "unclassified",
+        inputTokens: null,
+        outputTokens: null,
+      }),
+    ]),
+  );
+  expect(logs.text()).not.toContain("private.employee@example.invalid");
+  expect(logs.text()).not.toContain("usage-body-canary");
+});
 
 test("returns one validated AI draft in frozen order with labels and only metadata persisted", async () => {
   const server = await briefProviderHttpServer(() => ({

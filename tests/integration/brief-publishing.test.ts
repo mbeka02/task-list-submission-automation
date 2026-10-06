@@ -18,6 +18,7 @@ import {
   type CapturedLarkRequest,
   larkHttpServer,
 } from "../support/lark-http-server.js";
+import { logCapture } from "../support/log-capture.js";
 
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -205,6 +206,106 @@ async function setup(
     members: () => members,
   };
 }
+
+test("publication timings and link delivery retain the brief run without logging the document body or URL", async () => {
+  const environment = await setup();
+  const logs = logCapture();
+  const coordinator = openBriefCoordinator({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  cleanups.push(coordinator.close);
+  expect(
+    await coordinator.completeDailyBrief({ briefId: environment.briefId, now }),
+  ).toMatchObject({ status: "published" });
+  expect(logs.events()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: "document_step_completed",
+        stage: "create",
+        durationMs: expect.any(Number),
+      }),
+      expect.objectContaining({
+        event: "document_step_completed",
+        stage: "privacy",
+      }),
+      expect.objectContaining({
+        event: "document_step_completed",
+        stage: "write",
+      }),
+      expect.objectContaining({
+        event: "document_step_completed",
+        stage: "verify",
+      }),
+      expect.objectContaining({
+        event: "document_step_completed",
+        stage: "share",
+      }),
+      expect.objectContaining({ event: "delivery_completed", status: "sent" }),
+      expect.objectContaining({
+        event: "brief_completed",
+        status: "published",
+      }),
+    ]),
+  );
+  expect(new Set(logs.events().map((event) => event.runId)).size).toBe(1);
+  expect(
+    logs
+      .events()
+      .every(
+        (event) =>
+          event.briefId === environment.briefId &&
+          event.entryPoint === "brief_api",
+      ),
+  ).toBe(true);
+  for (const canary of [
+    "docSynthetic",
+    "folderPrivate",
+    "synthetic-secret",
+    "synthetic-token",
+    "Alice",
+    "Draft client drawings",
+    "https://synthetic.larksuite.com",
+    "Today's brief",
+  ])
+    expect(logs.text()).not.toContain(canary);
+});
+
+test("a denied editor grant identifies the failed publication stage without logging the vendor body", async () => {
+  const environment = await setup((request) =>
+    request.path.endsWith("/members") && request.method === "POST"
+      ? { status: 403, body: { code: 999, msg: "permission-body-canary" } }
+      : undefined,
+  );
+  const logs = logCapture();
+  const coordinator = openBriefCoordinator({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  cleanups.push(coordinator.close);
+  expect(
+    await coordinator.completeDailyBrief({ briefId: environment.briefId, now }),
+  ).toMatchObject({
+    status: "review_required",
+    reason: "document_operation_unverified",
+  });
+  expect(logs.events()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: "document_step_failed",
+        stage: "share",
+        reason: "document_operation_unverified",
+        level: "warn",
+      }),
+      expect.objectContaining({
+        event: "brief_completed",
+        status: "review_required",
+        reason: "document_operation_unverified",
+      }),
+    ]),
+  );
+  expect(logs.text()).not.toContain("permission-body-canary");
+});
 
 test("closes tenant-readable defaults on an app-owned Doc before writing the brief", async () => {
   let linkSharing = "tenant_readable";

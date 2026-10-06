@@ -4,6 +4,11 @@ import { openBriefLedger } from "./brief-ledger.js";
 import { createBriefSubmissionReader } from "./brief-submissions.js";
 import type { BriefDocOptions } from "./lark-brief-doc.js";
 import {
+  type ObservabilityOptions,
+  operationalEvent,
+  withObservedRun,
+} from "./observability.js";
+import {
   type DeliveryTransport,
   openReportLedger,
   type ReportPolicy,
@@ -25,7 +30,7 @@ export interface HolidayCalendar {
 }
 
 /** Fixed worker scope, reviewed policy and external adapters; clocks return epoch milliseconds. */
-export interface DueWorkerOptions {
+export interface DueWorkerOptions extends ObservabilityOptions {
   databasePath: string;
   appId: string;
   sourceChatId: string;
@@ -594,11 +599,26 @@ export function createDueWorker(options: DueWorkerOptions) {
       (status.report.state === "due" || status.report.state === "blocked") &&
       reportNow >= Date.parse(`${status.businessDate}T10:01:00.000+03:00`)
     ) {
+      const readStarted = performance.now();
       const scan = await reader.readSubmissionHistory({
         businessDate: status.businessDate,
         sourceChatId: options.sourceChatId,
         replyPolicy: "exclude",
       });
+      operationalEvent(
+        scan.status === "complete" ? "info" : "warn",
+        "history_read_completed",
+        {
+          businessDate: status.businessDate,
+          captureKind: "names",
+          status: scan.status,
+          messageCount: scan.messages.length,
+          durationMs: Math.round(performance.now() - readStarted),
+          ...(scan.status !== "complete"
+            ? { reason: scan.reason, providerCode: scan.providerCode }
+            : {}),
+        },
+      );
       if (scan.status !== "complete") {
         reportIssue = {
           businessDate: status.businessDate,
@@ -619,6 +639,11 @@ export function createDueWorker(options: DueWorkerOptions) {
           },
         });
         if (prepared.status === "frozen") {
+          operationalEvent("info", "report_frozen", {
+            businessDate: status.businessDate,
+            deliveryId: prepared.delivery.id,
+            entryCount: prepared.delivery.entries.length,
+          });
           reportIssue = null;
           // Freeze useful observed evidence, but do not auto-send yesterday's report after midnight.
           const deliveryNow = Math.max(
@@ -639,6 +664,10 @@ export function createDueWorker(options: DueWorkerOptions) {
               86_400_000,
           });
         } else {
+          operationalEvent("warn", "report_preparation_blocked", {
+            businessDate: status.businessDate,
+            reasons: prepared.reasons,
+          });
           reportIssue = {
             businessDate: status.businessDate,
             reason: prepared.reasons[0] ?? "preparation_blocked",
@@ -669,14 +698,49 @@ export function createDueWorker(options: DueWorkerOptions) {
       !briefLedger.getDailyBrief(latest.businessDate) &&
       briefNow >= Date.parse(`${latest.businessDate}T10:15:00+03:00`)
     ) {
+      const readStarted = performance.now();
       const scan = await briefReader.readBriefSubmissions({
         businessDate: latest.businessDate,
       });
+      operationalEvent(
+        scan.status === "complete" ? "info" : "warn",
+        "history_read_completed",
+        {
+          businessDate: latest.businessDate,
+          captureKind: "brief",
+          status: scan.status,
+          messageCount: scan.messages.length,
+          entryCount: scan.entries.length,
+          lateCount: scan.entries.filter((entry) => entry.timeliness === "late")
+            .length,
+          reason: scan.reason,
+          providerCode: scan.providerCode,
+          durationMs: Math.round(performance.now() - readStarted),
+        },
+      );
       if (scan.status === "complete") {
         const prepared = briefLedger.prepareDailyBrief({
           businessDate: latest.businessDate,
           scan,
         });
+        operationalEvent(
+          prepared.status === "frozen" ? "info" : "warn",
+          prepared.status === "frozen"
+            ? "brief_input_frozen"
+            : "brief_preparation_blocked",
+          {
+            businessDate: latest.businessDate,
+            ...(prepared.status === "frozen"
+              ? {
+                  briefId: prepared.brief.id,
+                  entryCount: prepared.brief.entries.length,
+                  lateCount: prepared.brief.entries.filter(
+                    (entry) => entry.timeliness === "late",
+                  ).length,
+                }
+              : { reasons: prepared.reasons }),
+          },
+        );
         briefIssue =
           prepared.status === "blocked"
             ? {
@@ -757,10 +821,83 @@ export function createDueWorker(options: DueWorkerOptions) {
     });
   }
   let inFlight: ReturnType<typeof executeDueWork> | null = null;
+  let previousLogState = "";
+  let lastInfoMs: number | null = null;
   /** Coalesce overlapping ticks; retries belong to later checks, never a blocking sleep. */
   function runDueWork(input: { now: number }) {
     if (inFlight) return inFlight;
-    inFlight = executeDueWork(input).finally(() => {
+    inFlight = withObservedRun(options, "worker_api", async () => {
+      const started = performance.now();
+      operationalEvent("debug", "worker_check_started");
+      try {
+        const result = await executeDueWork(input);
+        const fields = {
+          businessDate: result.businessDate,
+          status: result.status,
+          reminderState: result.reminder.state,
+          reportState: result.report.state,
+          briefState: result.brief.state,
+          reason: "reason" in result ? result.reason : undefined,
+          reportReason:
+            "reason" in result.report
+              ? result.report.reason
+              : "lastError" in result.report
+                ? result.report.lastError
+                : undefined,
+          briefReason:
+            "reason" in result.brief
+              ? result.brief.reason
+              : "publicationLastError" in result.brief
+                ? (result.brief.publicationLastError ??
+                  result.brief.generationLastError)
+                : undefined,
+          backfillCount: "backfill" in result ? result.backfill.total : 0,
+          reviewCount:
+            "reminderReviews" in result ? result.reminderReviews.total : 0,
+          briefBackfillCount:
+            "briefBackfill" in result ? result.briefBackfill.total : 0,
+          reviewRequired:
+            result.status !== "ok" ||
+            ("reconciliationRequired" in result.reminder &&
+              result.reminder.reconciliationRequired) ||
+            ("reconciliationRequired" in result.report &&
+              result.report.reconciliationRequired) ||
+            result.brief.state === "review_required" ||
+            ("backfill" in result && result.backfill.total > 0) ||
+            ("reminderReviews" in result && result.reminderReviews.total > 0) ||
+            ("briefBackfill" in result && result.briefBackfill.total > 0),
+        };
+        const state = JSON.stringify(fields);
+        const degraded =
+          fields.reviewRequired ||
+          result.status !== "ok" ||
+          result.report.state === "blocked" ||
+          result.brief.state === "blocked" ||
+          result.brief.state === "review_required";
+        const heartbeatDue =
+          lastInfoMs === null || input.now >= lastInfoMs + 600_000;
+        const level =
+          state === previousLogState && !heartbeatDue
+            ? "debug"
+            : degraded
+              ? "warn"
+              : "info";
+        operationalEvent(level, "worker_check_completed", {
+          ...fields,
+          durationMs: Math.round(performance.now() - started),
+        });
+        if (level !== "debug" && Number.isSafeInteger(input.now))
+          lastInfoMs = input.now;
+        previousLogState = state;
+        return result;
+      } catch (error) {
+        operationalEvent("error", "worker_check_failed", {
+          reason: "execution_unavailable",
+          durationMs: Math.round(performance.now() - started),
+        });
+        throw error;
+      }
+    }).finally(() => {
       inFlight = null;
     });
     return inFlight;

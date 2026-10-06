@@ -2,7 +2,7 @@
 
 A TypeScript worker that identifies who posted a daily task list in Lark and prepares a management report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
 
-**Release status:** local development, preview and Docker acceptance are supported. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. Production access, worker OAuth provisioning, live acceptance and deployment remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
+**Release status:** the optional brief implementation and local release acceptance are complete. Gemini and DeepSeek pass the same offline container publication/recovery drill; live quality and native Lark appearance/access are still unverified. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. Production access, worker OAuth provisioning, live acceptance and deployment remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
 
 ## Table of contents
 
@@ -37,7 +37,7 @@ Only supported text and rich-text task lists posted in the main conversation cou
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
-The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. The scheduler now supports this path independently at 10:15. The worker CLI permits capture-only opt-in; model calls, Doc publication and sending remain disabled in that command.
+The optional AI brief supplements the names report. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. The scheduler now supports this path independently at 10:15. The worker CLI permits capture-only opt-in; model calls, Doc publication and sending remain disabled in that command.
 
 ## System design
 
@@ -446,7 +446,7 @@ pnpm release:build
 pnpm test:release
 ```
 
-Tests use synthetic data, temporary real SQLite files and controlled HTTP fixtures; they need no live Lark credentials or messages. Docker acceptance requires local Docker access and runs separately from the ordinary suite. See the [runbook](RUNBOOK.md#build-and-exercise-the-local-image) for optional rollback acceptance.
+Tests use synthetic data, temporary real SQLite files and controlled HTTP fixtures; they need no live Lark credentials or messages. Docker acceptance requires local Docker access and runs separately from the ordinary suite. Its brief drill runs both real providers against synthetic loopback HTTP inside containers with networking disabled, verifies Doc/link and independent delivery retention across replacement and backup/restore, and checks that generated-body canaries are absent from ledger snapshots while source evidence remains. It does not establish live model quality, billing, permissions or native appearance. See the [runbook](RUNBOOK.md#build-and-exercise-the-local-image) for optional rollback acceptance.
 
 Generate schema changes with `pnpm db:generate`, review and commit the SQL/snapshot, then migrate isolated storage with `pnpm db:migrate` using the intended `SQLITE_FILE_PATH`. Do not use schema push against production.
 

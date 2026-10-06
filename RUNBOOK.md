@@ -38,10 +38,37 @@ local credentials/data into that build context), then run:
 RELEASE_PREVIOUS_IMAGE=<local-previous-image-tag> pnpm test:release
 ```
 
-The recorded predecessor for this local acceptance is merged Slice 5 commit
-`d8000cf74ae0deec644c8f2282cfb0f066f8a597`; the test checks pending/sent records
-through both built versions. Without `RELEASE_PREVIOUS_IMAGE`, this one optional
-case is skipped. Use the actual deployed predecessor for a future release drill.
+The final optional-brief drill uses the merged AI-6 runtime as predecessor
+(main `8f3907c`). Earlier core acceptance used merged Slice 5
+`d8000cf74ae0deec644c8f2282cfb0f066f8a597`. The rollback check preserves
+pending/sent records through both built versions. Without
+`RELEASE_PREVIOUS_IMAGE`, that optional case is skipped. Use the actual deployed predecessor for a future release drill.
+
+### What the brief release drill proves
+
+The two added container cases select Gemini or DeepSeek through the same factory
+configuration. Each uses actual packaged worker, SQLite, Lark SDK and provider
+adapters against synthetic loopback HTTP; `--network=none` prevents remote access.
+The test driver is mounted separately and excluded from the release image.
+
+Both cases verify the same on-time/late membership, names-report cutoff, native
+Doc text/late-label/footer readback and independent report/reminder/link records.
+Container replacement preserves IDs, UUIDs, acknowledgements and the saved Doc
+reference without another history read, generation, Doc write or send. Built
+status inspects the published reference with outbound disabled. Online backup and
+isolated restore preserve these records; restore remains paused with no HTTP.
+Generated-body canaries are absent from the ledger and snapshot, while original
+source evidence remains. These are controlled-fixture checks, not live quality,
+permissions or appearance evidence.
+
+Run the complete final drill with local image tags, for example:
+
+```bash
+RUN_DOCKER_ACCEPTANCE=true RELEASE_TEST_IMAGE=task-list-local:ai-7 RELEASE_PREVIOUS_IMAGE=task-list-local:ai-6 pnpm exec vitest run tests/acceptance/container.test.ts
+```
+
+Run regression and container suites sequentially on a busy workstation: both use
+real subprocesses, and competing load can exhaust startup-test deadlines.
 
 ## Configure an isolated preview
 
@@ -227,8 +254,9 @@ opening a writable ledger applies the packaged migrations. Rehearse the upgrade
 on isolated storage first. Backup/restore commands require their release's exact
 migration history, so use the upgraded release for snapshots taken after upgrade.
 The local predecessor rollback check preserves pending/sent delivery records,
-UUIDs and acknowledgements, but that predecessor cannot operate the new brief
-module. Keep the upgraded schema intact when rolling back application code; verify
+UUIDs and acknowledgements. Releases predating the brief extension cannot
+operate that module; verify the selected predecessor rather than assuming
+backward compatibility. Keep the upgraded schema intact when rolling back application code; verify
 compatibility or restore to isolated paused storage before changing versions. Never truncate the ledger to
 make an old version start.
 
@@ -245,6 +273,17 @@ and real SDK renewal. Agree evidence retention/access and alert recipients. Comp
 bounded preview days with Joseh's manual list and explain every discrepancy. The
 comparison period and acceptable results require agreement; local fixtures do not
 prove these live conditions.
+
+For the optional brief, separately authorize a small synthetic live model sample
+and a private Doc test with exact app identity, recipient/folder and content.
+Verify every selected person, faithful work summaries, late labels and source-backed
+notes; record model/prompt/template/schema versions, actual billable usage and
+failure observations. Then verify native layout, management editor access, saved
+link delivery and preservation of human edits. Approve data processing before
+using employee tasks; the current Gemini free-tier demo remains synthetic only.
+A fixture-passing model is not yet proven cost-effective or factually reliable.
+Gemini remains the initial selected provider; DeepSeek live credentials/model
+access and processing terms need their own review before selection.
 
 Joseh's manual list remains the fallback while access or the worker is unavailable.
 Both sending routes require separate activation approval after those gates pass.

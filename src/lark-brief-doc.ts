@@ -190,16 +190,47 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         revision: document.revision_id as number,
       };
     },
-    async assertPrivate(id: string) {
-      const settings = await client.drive.v2.permissionPublic.get(
-        { path: { token: id }, params: { type: "docx" } },
-        withTenantToken(token),
-      );
-      const collaborators = await client.drive.permissionMember.list(
-        { path: { token: id }, params: { type: "docx" } },
-        withTenantToken(token),
-      );
-      const members = collaborators.data?.items;
+    async preparePrivate(id: string, guard: () => void) {
+      const getSettings = () =>
+        client.drive.v2.permissionPublic.get(
+          { path: { token: id }, params: { type: "docx" } },
+          withTenantToken(token),
+        );
+      let settings = await getSettings();
+      const getCollaborators = () =>
+        client.drive.permissionMember.list(
+          { path: { token: id }, params: { type: "docx" } },
+          withTenantToken(token),
+        );
+      let collaborators = await getCollaborators();
+      let members = collaborators.data?.items;
+      // New Docs can default to tenant-readable even inside a private folder.
+      // Close that default only when this app is the sole verified owner.
+      if (
+        settings.code === 0 &&
+        settings.data?.permission_public?.link_share_entity ===
+          "tenant_readable" &&
+        collaborators.code === 0 &&
+        members?.length === 1 &&
+        members[0]?.member_type === "appid" &&
+        members[0]?.member_id === appId &&
+        members[0]?.perm === "full_access"
+      ) {
+        guard();
+        const changed = await client.drive.permissionPublic.patch(
+          {
+            path: { token: id },
+            params: { type: "docx" },
+            data: { link_share_entity: "closed" },
+          },
+          withTenantToken(token),
+        );
+        if (changed.code !== 0)
+          throw new Error("Private staging access unverified");
+        settings = await getSettings();
+        collaborators = await getCollaborators();
+        members = collaborators.data?.items;
+      }
       if (
         settings.code !== 0 ||
         settings.data?.permission_public?.link_share_entity !== "closed" ||

@@ -117,6 +117,26 @@ test("a calendar date may follow the task-list heading on the same line", () => 
   expect(result.entries).toHaveLength(1);
 });
 
+test("a possessive weekday and separated date may decorate a task-list heading", () => {
+  const result = evaluate([
+    {
+      ...message,
+      messageType: "post",
+      content: JSON.stringify({
+        title: "",
+        content: [
+          [{ tag: "text", text: "Avery’s Tuesday’s To Do List – 1st Oct" }],
+          [{ tag: "text", text: "1. Review the sales sheet" }],
+        ],
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries.map((entry) => entry.displayName)).toEqual([
+    "Anthony Mbeka",
+  ]);
+});
+
 test("a possessive name may omit its apostrophe in a task-list heading", () => {
   const result = evaluate([
     {

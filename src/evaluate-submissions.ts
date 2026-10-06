@@ -319,9 +319,9 @@ function evaluateCurrentObservations(
     const heading = new RegExp(
       [
         String.raw`^(?:(?:my|our|today's|[\p{L}\p{N} ._-]+'s|[\p{L}\p{N}._-]+s)\s+)?`,
-        String.raw`(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+)?`,
+        String.raw`(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)(?:'s)?\s+)?`,
         String.raw`(?:to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list|do\s+list)\s*[.:]?`,
-        String.raw`(?:[ \t]+\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?)?`,
+        String.raw`(?:[ \t]+(?:-[ \t]*)?\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?)?`,
         String.raw`[ \t]*(?:\n|$)`,
       ].join(""),
       "iu",

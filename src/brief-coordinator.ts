@@ -486,7 +486,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         documentRevision: created.revision,
         publicationState: "writing",
       });
-      await docs.assertPrivate(id);
+      await docs.preparePrivate(id, fence.guard);
       let revision = created.revision;
       const tokens: string[] = [];
       for (let offset = 0; offset < rendered.blocks.length; offset += 50) {

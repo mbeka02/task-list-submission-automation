@@ -152,7 +152,13 @@ Restore pauses capture, generation, Doc changes and announcements.
 
 Before activation, establish worker credentials, approved data processing, private
 folder ownership/permissions, management editor access and an authorized private
-live appearance/access test. Free-tier demonstrations remain synthetic only.
+live appearance/access test. The bot needs native Doc create/read/write access,
+`drive:drive:readonly` for access checks, `docs:permission.setting:write_only`
+to close a new Doc's tenant-readable default, and
+`docs:permission.member:create` for the approved group editor grant. Verify
+closed link access and restricted collaborators before writing task content.
+Free-tier demonstrations use synthetic input unless the operator explicitly
+approves a specific real-data sample; that approval does not activate production.
 No publishing configuration or live permission is implied by enabling capture.
 
 ## Inspect and recover ordinary work

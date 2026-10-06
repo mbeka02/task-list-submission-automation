@@ -1,3 +1,8 @@
+import { openBriefCoordinator } from "./brief-coordinator.js";
+import type { BriefGenerator } from "./brief-generator.js";
+import { openBriefLedger } from "./brief-ledger.js";
+import { createBriefSubmissionReader } from "./brief-submissions.js";
+import type { BriefDocOptions } from "./lark-brief-doc.js";
 import {
   type DeliveryTransport,
   openReportLedger,
@@ -38,6 +43,20 @@ export interface DueWorkerOptions {
   restoreMode?: boolean;
   /** Inspect an existing migrated ledger only; runDueWork is disabled on this instance. */
   readOnly?: boolean;
+  /** Optional supplementary brief; capture-only never invokes generation or publication. */
+  brief?: {
+    mode: "capture_only" | "publish";
+    activationDate: string;
+    provider: "gemini" | "deepseek";
+    model: string;
+    templateVersion: string;
+    promptVersion: string;
+    schemaVersion: string;
+    generator?: BriefGenerator;
+    template?: string;
+    instructions?: string;
+    docPublishing?: BriefDocOptions;
+  };
 }
 
 /** Require a real ISO business date, rejecting normalized impossible dates such as 30 February. */
@@ -125,6 +144,27 @@ function deliveryStatus(
 
 /** Coordinate reminder/report due work through the approved S5 operations. */
 export function createDueWorker(options: DueWorkerOptions) {
+  const briefConfigurationValid =
+    !options.brief ||
+    (["capture_only", "publish"].includes(options.brief.mode) &&
+      ["gemini", "deepseek"].includes(options.brief.provider) &&
+      validDate(options.brief.activationDate) &&
+      options.brief.activationDate >= options.activationDate &&
+      options.brief.activationDate >= options.calendar.fromDate &&
+      options.brief.activationDate <= options.calendar.throughDate &&
+      [
+        options.brief.model,
+        options.brief.templateVersion,
+        options.brief.promptVersion,
+        options.brief.schemaVersion,
+      ].every((value) => Boolean(value.trim())) &&
+      (options.brief.mode === "capture_only" ||
+        Boolean(
+          options.brief.generator &&
+            options.brief.template?.trim() &&
+            options.brief.instructions?.trim() &&
+            options.brief.docPublishing,
+        )));
   const reminderLedger = openReportLedger({
     ...options,
     destinationChatId: options.sourceChatId,
@@ -134,8 +174,34 @@ export function createDueWorker(options: DueWorkerOptions) {
     ...options.reader,
     clock: options.clock ?? Date.now,
   });
+  const briefPolicy: ReportPolicy = {
+    ...options.policy,
+    appId: options.appId,
+    sourceChatId: options.sourceChatId,
+    timeZone: "Africa/Nairobi",
+    publicHolidays: options.calendar.publicHolidays,
+    policyVersion: `${options.policy.policyVersion}/${options.calendar.version}`,
+  };
+  const briefLedger =
+    options.brief && briefConfigurationValid
+      ? openBriefLedger({ ...options, ...options.brief, policy: briefPolicy })
+      : null;
+  const briefReader =
+    options.brief && briefConfigurationValid
+      ? createBriefSubmissionReader({
+          ...options.reader,
+          policy: briefPolicy,
+          clock: options.clock ?? Date.now,
+        })
+      : null;
   // Recent read/preparation failures describe this process; durable delivery state survives restart.
   let reportIssue: {
+    businessDate: string;
+    reason: string;
+    reasons: readonly string[];
+  } | null = null;
+  // Capture failures are process-local; an already frozen brief always wins over later reads.
+  let briefIssue: {
     businessDate: string;
     reason: string;
     reasons: readonly string[];
@@ -202,7 +268,7 @@ export function createDueWorker(options: DueWorkerOptions) {
     };
   }
   /** Inspect current business-date work without creating deliveries or contacting Lark. */
-  function getStatus({ now }: { now: number }) {
+  function getCoreStatus({ now }: { now: number }) {
     if (
       !Number.isSafeInteger(now) ||
       now < 0 ||
@@ -329,6 +395,168 @@ export function createDueWorker(options: DueWorkerOptions) {
             },
     };
   }
+  /** Older brief work is discovered locally and bounded in output; discovery never initiates backfill. */
+  function briefBackfillStatus(today: string) {
+    if (!options.brief || !briefLedger)
+      return { dates: [], items: [], total: 0, truncated: false };
+    const saved = new Map(
+      briefLedger
+        .listDailyBriefs(options.brief.activationDate, today)
+        .map((row) => [row.businessDate, row]),
+    );
+    const items: {
+      businessDate: string;
+      state: string;
+      briefId?: string;
+      documentUrl?: string | null;
+      deliveryId?: string | null;
+    }[] = [];
+    let total = 0;
+    for (
+      let day = Date.parse(`${options.brief.activationDate}T12:00:00Z`);
+      day < Date.parse(`${today}T12:00:00Z`);
+      day += 86400000
+    ) {
+      const date = new Date(day).toISOString().slice(0, 10);
+      const row = saved.get(date);
+      const weekday = new Date(day).getUTCDay();
+      const delivery = row?.announcementDeliveryId
+        ? reportLedger.getDelivery(row.announcementDeliveryId)
+        : null;
+      if (row?.publicationState === "published" && delivery?.state === "sent")
+        continue;
+      if (
+        row &&
+        options.brief.mode === "capture_only" &&
+        row.generationState === "pending" &&
+        row.publicationState === "pending"
+      )
+        continue;
+      if (
+        !row &&
+        (weekday === 0 ||
+          weekday === 6 ||
+          options.calendar.publicHolidays.includes(date))
+      )
+        continue;
+      total++;
+      if (items.length < 31)
+        items.push(
+          row
+            ? {
+                businessDate: date,
+                state:
+                  row.publicationState === "pending"
+                    ? row.generationState
+                    : row.publicationState,
+                briefId: row.id,
+                documentUrl: row.documentUrl,
+                deliveryId: row.announcementDeliveryId,
+              }
+            : { businessDate: date, state: "missing" },
+        );
+    }
+    return {
+      dates: items.map((item) => item.businessDate),
+      items,
+      total,
+      truncated: total > items.length,
+    };
+  }
+  /** Extend operator output with supplementary work; no model/Lark calls happen during inspection. */
+  function getStatus(input: { now: number }) {
+    const core = getCoreStatus(input);
+    const job = core.businessDate
+      ? briefLedger?.getDailyBrief(core.businessDate)
+      : null;
+    const announcement = job?.announcementDeliveryId
+      ? reportLedger.getDelivery(job.announcementDeliveryId)
+      : null;
+    const brief = !options.brief
+      ? { state: "disabled" as const }
+      : !briefConfigurationValid
+        ? {
+            state: "blocked" as const,
+            reason: "invalid_brief_configuration",
+            mode: options.brief.mode,
+          }
+        : core.status !== "ok"
+          ? {
+              state: "blocked" as const,
+              reason: core.reason,
+              mode: options.brief.mode,
+            }
+          : core.businessDate < options.brief.activationDate
+            ? {
+                state: "skipped" as const,
+                reason: "before_activation",
+                mode: options.brief.mode,
+              }
+            : core.report.state === "skipped" && "reason" in core.report
+              ? {
+                  state: "skipped" as const,
+                  reason: core.report.reason,
+                  mode: options.brief.mode,
+                }
+              : job
+                ? {
+                    state:
+                      briefIssue?.businessDate === core.businessDate
+                        ? ("blocked" as const)
+                        : job.publicationState === "published"
+                          ? ("published" as const)
+                          : job.publicationState === "review_required" ||
+                              job.generationState === "review_required"
+                            ? ("review_required" as const)
+                            : ("input_frozen" as const),
+                    mode: options.brief.mode,
+                    briefId: job.id,
+                    ...(briefIssue?.businessDate === core.businessDate
+                      ? {
+                          reason: briefIssue.reason,
+                          reasons: briefIssue.reasons,
+                        }
+                      : {}),
+                    entryCount: job.entries.length,
+                    generationState: job.generationState,
+                    generationAttemptCount: job.generationAttemptCount,
+                    generationNextAttemptMs: job.generationNextAttemptMs,
+                    generationClaimExpiresMs: job.generationClaimExpiresMs,
+                    generationLastError: job.generationLastError,
+                    publicationState: job.publicationState,
+                    publicationClaimExpiresMs: job.publicationClaimExpiresMs,
+                    publicationLastError: job.publicationLastError,
+                    documentUrl: job.documentUrl,
+                    announcement: announcement
+                      ? deliveryStatus(announcement, input.now, true)
+                      : null,
+                  }
+                : briefIssue?.businessDate === core.businessDate
+                  ? {
+                      state: "blocked" as const,
+                      reason: briefIssue.reason,
+                      reasons: briefIssue.reasons,
+                      mode: options.brief.mode,
+                    }
+                  : {
+                      state:
+                        input.now >=
+                        Date.parse(`${core.businessDate}T10:15:00+03:00`)
+                          ? ("due" as const)
+                          : ("not_due" as const),
+                      mode: options.brief.mode,
+                    };
+    return {
+      ...core,
+      brief,
+      ...(options.brief &&
+      briefConfigurationValid &&
+      core.businessDate &&
+      (core.status === "ok" || core.status === "paused")
+        ? { briefBackfill: briefBackfillStatus(core.businessDate) }
+        : {}),
+    };
+  }
   /** Execute one check; external calls run outside SQLite transactions. */
   async function executeDueWork(input: { now: number }) {
     let status = getStatus(input);
@@ -377,45 +605,46 @@ export function createDueWorker(options: DueWorkerOptions) {
           reason: scan.reason,
           reasons: [scan.reason],
         };
-        return getStatus({
-          now: Math.max(input.now, (options.clock ?? Date.now)()),
-        });
-      }
-      const prepared = reportLedger.prepareDailyReport({
-        businessDate: status.businessDate,
-        scan,
-        policy: {
-          ...options.policy,
-          appId: options.appId,
-          sourceChatId: options.sourceChatId,
-          timeZone: "Africa/Nairobi",
-          publicHolidays: options.calendar.publicHolidays,
-          policyVersion: `${options.policy.policyVersion}/${options.calendar.version}`,
-        },
-      });
-      if (prepared.status === "frozen") {
-        reportIssue = null;
-        // Freeze useful observed evidence, but do not auto-send yesterday's report after midnight.
-        const deliveryNow = Math.max(input.now, (options.clock ?? Date.now)());
-        const latest = getStatus({ now: deliveryNow });
-        if (
-          latest.status !== "ok" ||
-          latest.businessDate !== status.businessDate
-        )
-          return latest;
-        await reportLedger.deliverDelivery({
-          deliveryId: prepared.delivery.id,
-          now: deliveryNow,
-          deliveryDeadlineMs:
-            Date.parse(`${status.businessDate}T00:00:00.000+03:00`) +
-            86_400_000,
-        });
       } else {
-        reportIssue = {
+        const prepared = reportLedger.prepareDailyReport({
           businessDate: status.businessDate,
-          reason: prepared.reasons[0] ?? "preparation_blocked",
-          reasons: prepared.reasons,
-        };
+          scan,
+          policy: {
+            ...options.policy,
+            appId: options.appId,
+            sourceChatId: options.sourceChatId,
+            timeZone: "Africa/Nairobi",
+            publicHolidays: options.calendar.publicHolidays,
+            policyVersion: `${options.policy.policyVersion}/${options.calendar.version}`,
+          },
+        });
+        if (prepared.status === "frozen") {
+          reportIssue = null;
+          // Freeze useful observed evidence, but do not auto-send yesterday's report after midnight.
+          const deliveryNow = Math.max(
+            input.now,
+            (options.clock ?? Date.now)(),
+          );
+          const latest = getStatus({ now: deliveryNow });
+          if (
+            latest.status !== "ok" ||
+            latest.businessDate !== status.businessDate
+          )
+            return latest;
+          await reportLedger.deliverDelivery({
+            deliveryId: prepared.delivery.id,
+            now: deliveryNow,
+            deliveryDeadlineMs:
+              Date.parse(`${status.businessDate}T00:00:00.000+03:00`) +
+              86_400_000,
+          });
+        } else {
+          reportIssue = {
+            businessDate: status.businessDate,
+            reason: prepared.reasons[0] ?? "preparation_blocked",
+            reasons: prepared.reasons,
+          };
+        }
       }
     } else if (
       ["pending", "retryable", "uncertain", "sending"].includes(
@@ -429,6 +658,99 @@ export function createDueWorker(options: DueWorkerOptions) {
         deliveryDeadlineMs:
           Date.parse(`${status.businessDate}T00:00:00.000+03:00`) + 86_400_000,
       });
+    }
+    const briefNow = Math.max(input.now, (options.clock ?? Date.now)());
+    const latest = getStatus({ now: briefNow });
+    if (
+      briefLedger &&
+      briefReader &&
+      latest.status === "ok" &&
+      ["due", "blocked"].includes(latest.brief.state) &&
+      !briefLedger.getDailyBrief(latest.businessDate) &&
+      briefNow >= Date.parse(`${latest.businessDate}T10:15:00+03:00`)
+    ) {
+      const scan = await briefReader.readBriefSubmissions({
+        businessDate: latest.businessDate,
+      });
+      if (scan.status === "complete") {
+        const prepared = briefLedger.prepareDailyBrief({
+          businessDate: latest.businessDate,
+          scan,
+        });
+        briefIssue =
+          prepared.status === "blocked"
+            ? {
+                businessDate: latest.businessDate,
+                reason: prepared.reasons[0] ?? "brief_preparation_blocked",
+                reasons: prepared.reasons,
+              }
+            : null;
+      } else {
+        const reason = scan.reason ?? "brief_capture_incomplete";
+        briefIssue = {
+          businessDate: latest.businessDate,
+          reason,
+          reasons: [reason],
+        };
+      }
+    }
+    if (
+      briefLedger &&
+      options.brief?.mode === "publish" &&
+      latest.status === "ok" &&
+      latest.brief.state !== "skipped" &&
+      briefNow >= Date.parse(`${latest.businessDate}T10:15:00+03:00`)
+    ) {
+      const job = briefLedger.getDailyBrief(latest.businessDate);
+      const announcement = job?.announcementDeliveryId
+        ? reportLedger.getDelivery(job.announcementDeliveryId)
+        : null;
+      if (
+        job &&
+        job.publicationState !== "review_required" &&
+        job.generationState !== "review_required" &&
+        announcement?.state !== "sent" &&
+        options.brief.generator &&
+        options.brief.template &&
+        options.brief.instructions &&
+        options.brief.docPublishing
+      ) {
+        let coordinator: ReturnType<typeof openBriefCoordinator> | null = null;
+        try {
+          coordinator = openBriefCoordinator({
+            ...options,
+            ...options.brief,
+            policy: briefPolicy,
+            generator: options.brief.generator,
+            template: options.brief.template,
+            instructions: options.brief.instructions,
+            docPublishing: options.brief.docPublishing,
+          });
+          const result = await coordinator.completeDailyBrief({
+            briefId: job.id,
+            now: Math.max(input.now, (options.clock ?? Date.now)()),
+            deadlineMs:
+              Date.parse(`${latest.businessDate}T00:00:00+03:00`) + 86400000,
+          });
+          briefIssue =
+            result.status === "blocked"
+              ? {
+                  businessDate: latest.businessDate,
+                  reason: result.reason,
+                  reasons: [result.reason],
+                }
+              : null;
+        } catch {
+          // Durable claims remain authoritative after an unknown failure; never log provider/source data.
+          briefIssue = {
+            businessDate: latest.businessDate,
+            reason: "brief_execution_unavailable",
+            reasons: ["brief_execution_unavailable"],
+          };
+        } finally {
+          coordinator?.close();
+        }
+      }
     }
     return getStatus({
       now: Math.max(input.now, (options.clock ?? Date.now)()),
@@ -449,6 +771,7 @@ export function createDueWorker(options: DueWorkerOptions) {
     close: () => {
       reminderLedger.close();
       reportLedger.close();
+      briefLedger?.close();
     },
   };
 }

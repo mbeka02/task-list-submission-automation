@@ -47,9 +47,12 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
   async function completeDailyBrief({
     briefId,
     now,
+    deadlineMs,
   }: {
     briefId: string;
     now: number;
+    /** Optional exclusive end for a scheduled invocation; reviewed manual work may omit it. */
+    deadlineMs?: number;
   }) {
     if (requiresRestoreReview(options.databasePath))
       return {
@@ -59,6 +62,14 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     let brief = getBrief(briefId);
     if (!brief)
       return { status: "blocked" as const, reason: "brief_not_found" };
+    if (
+      deadlineMs !== undefined &&
+      (!Number.isSafeInteger(deadlineMs) ||
+        deadlineMs <= brief.captureThroughMs)
+    )
+      return { status: "blocked" as const, reason: "invalid_work_deadline" };
+    if (deadlineMs !== undefined && Math.max(now, clock()) >= deadlineMs)
+      return { status: "not_started" as const, reason: "work_window_expired" };
     if (
       !Number.isSafeInteger(now) ||
       now < brief.captureThroughMs ||
@@ -89,9 +100,9 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         reason: "publication_configuration_mismatch",
       };
     if (docs && ["verified", "published"].includes(brief.publicationState))
-      return announce(briefId);
+      return announce(briefId, deadlineMs);
     if (docs && brief.publicationState !== "pending")
-      return recoverPublication(briefId);
+      return recoverPublication(briefId, deadlineMs);
     if (brief.generationState === "review_required")
       return {
         status: "review_required" as const,
@@ -118,14 +129,14 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       brief.generationKind === "fallback"
     )
       return docs
-        ? publish(briefId, sourceContent(brief))
+        ? publish(briefId, sourceContent(brief), deadlineMs)
         : { status: "ready" as const, content: sourceContent(brief) };
     if (
       brief.generationState === "content_ready" &&
       brief.generationKind === "empty"
     )
       return docs
-        ? publish(briefId, emptyContent(brief))
+        ? publish(briefId, emptyContent(brief), deadlineMs)
         : { status: "ready" as const, content: emptyContent(brief) };
     const token = randomUUID();
 
@@ -149,7 +160,10 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
               ? (current.generationStartedMs ?? now)
               : null,
             generationDeadlineMs: current.entries.length
-              ? (current.generationDeadlineMs ?? now + 45000)
+              ? Math.min(
+                  current.generationDeadlineMs ?? now + 45000,
+                  deadlineMs ?? Infinity,
+                )
               : null,
             generationClaimToken: token,
             generationClaimExpiresMs: now + 20000,
@@ -164,7 +178,10 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       return { status: "not_started" as const, reason: "claim_active" };
 
     brief = claimed;
-    const deadline = brief.generationDeadlineMs ?? now + 45000;
+    const deadline = Math.min(
+      brief.generationDeadlineMs ?? now + 45000,
+      deadlineMs ?? Infinity,
+    );
 
     // Every later write is fenced, so an expired/replaced owner cannot emit or overwrite content.
     const owned = and(
@@ -173,6 +190,11 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     );
     /** Hash the memory-only handoff; generated text has no storage column. */
     async function finish(content: BriefContent) {
+      if (deadlineMs !== undefined && clock() >= deadlineMs)
+        return {
+          status: "not_started" as const,
+          reason: "work_window_expired",
+        };
       if (requiresRestoreReview(options.databasePath))
         return {
           status: "not_started" as const,
@@ -196,7 +218,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       if (!saved.changes)
         return { status: "not_started" as const, reason: "claim_lost" };
       return docs
-        ? publish(briefId, content)
+        ? publish(briefId, content, deadlineMs)
         : { status: "ready" as const, content };
     }
     if (brief.entries.length === 0) return finish(emptyContent(brief));
@@ -384,7 +406,11 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     return finish(sourceContent(brief));
   }
   /** Fence publication mutations against restore pause, lease expiry and a replacement owner. */
-  function publicationFence(briefId: string, token: string) {
+  function publicationFence(
+    briefId: string,
+    token: string,
+    deadlineMs?: number,
+  ) {
     const owned = and(
       eq(dailyBriefs.id, briefId),
       eq(dailyBriefs.publicationClaimToken, token),
@@ -394,6 +420,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         const brief = getBrief(briefId);
         const current = clock();
         if (
+          (deadlineMs !== undefined && current + 15000 >= deadlineMs) ||
           requiresRestoreReview(options.databasePath) ||
           !Number.isSafeInteger(current) ||
           brief?.publicationClaimToken !== token ||
@@ -409,7 +436,11 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     };
   }
   /** Persist each mutation's intent and acknowledged reference before proceeding to the next operation. */
-  async function publish(briefId: string, content: BriefContent) {
+  async function publish(
+    briefId: string,
+    content: BriefContent,
+    deadlineMs?: number,
+  ) {
     if (!docs || !options.docPublishing)
       return {
         status: "blocked" as const,
@@ -443,7 +474,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       eq(dailyBriefs.id, briefId),
       eq(dailyBriefs.publicationClaimToken, token),
     );
-    const fence = publicationFence(briefId, token);
+    const fence = publicationFence(briefId, token, deadlineMs);
     try {
       await docs.authenticate();
       fence.guard();
@@ -480,7 +511,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         publicationClaimToken: null,
         publicationClaimExpiresMs: null,
       });
-      return announce(briefId);
+      return announce(briefId, deadlineMs);
     } catch {
       const reason = getBrief(briefId)?.documentUrl
         ? "document_operation_unverified"
@@ -498,7 +529,9 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     }
   }
   /** Announce an already verified document; the existing ledger owns send claims and UUID retries. */
-  async function announce(briefId: string) {
+  async function announce(briefId: string, deadlineMs?: number) {
+    if (deadlineMs !== undefined && clock() >= deadlineMs)
+      return { status: "not_started" as const, reason: "work_window_expired" };
     const frozen = announcements.prepareBriefAnnouncement({ briefId });
     if (frozen.status !== "frozen")
       return { status: "blocked" as const, reason: "announcement_unavailable" };
@@ -509,6 +542,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     const delivery = await announcements.deliverDelivery({
       deliveryId: frozen.delivery.id,
       now: clock(),
+      ...(deadlineMs !== undefined ? { deliveryDeadlineMs: deadlineMs } : {}),
     });
     return {
       status: "published" as const,
@@ -518,7 +552,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     };
   }
   /** A known Doc can be verified after response loss; recovery never writes its content again. */
-  async function recoverPublication(briefId: string) {
+  async function recoverPublication(briefId: string, deadlineMs?: number) {
     const brief = getBrief(briefId);
     if (
       brief?.publicationClaimExpiresMs !== null &&
@@ -565,7 +599,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       eq(dailyBriefs.id, briefId),
       eq(dailyBriefs.publicationClaimToken, token),
     );
-    const fence = publicationFence(briefId, token);
+    const fence = publicationFence(briefId, token, deadlineMs);
     try {
       await docs.authenticate();
       const id = new URL(brief.documentUrl).pathname.split("/").at(-1);
@@ -584,7 +618,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         publicationClaimToken: null,
         publicationClaimExpiresMs: null,
       });
-      return announce(briefId);
+      return announce(briefId, deadlineMs);
     } catch {
       db.update(dailyBriefs)
         .set({

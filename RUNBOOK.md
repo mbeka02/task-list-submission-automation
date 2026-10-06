@@ -89,6 +89,45 @@ Do not use `docker compose down --volumes`: it destroys the durable ledger and g
 Replacing/stopping a container must retain the same volumes. Test offline mode can
 exercise already frozen work, but a due report needing Lark remains blocked offline.
 
+## Optional 10:15 brief capture
+
+Keep `ENABLE_DAILY_BRIEF=false` until a reviewed preview capture is wanted. To
+capture only, set `ENABLE_DAILY_BRIEF=true`, `BRIEF_MODE=capture_only`, an explicit
+`BRIEF_ACTIVATION_DATE` on/after core activation within the calendar's coverage,
+`BRIEF_PROVIDER`, its `GEMINI_MODEL` or `DEEPSEEK_MODEL`, and all three
+`BRIEF_TEMPLATE_VERSION`, `BRIEF_PROMPT_VERSION`, `BRIEF_SCHEMA_VERSION` values.
+Use the existing `pnpm worker run --once`, `run` and `status` commands. No model
+key is needed for capture or inspection. A run still needs the approved source
+user-OAuth grant. CLI `publish` mode and outbound sending are rejected.
+
+At/after 10:15 on a Nairobi working day, one additional bounded history read
+captures sends before 10:15, labelling sends from 10:01 as late. Failed or
+ambiguous reads stay blocked; they are not empty days. Core and brief reads fail
+independently. A frozen brief is reused on restart; retries do not expand the
+capture. Capture-only does not call a model, create/share a Doc or send a message.
+
+`status` exposes `brief` state, ID, entry count, generation/publication errors,
+attempts/leases, Doc URL and announcement state when present, without source or
+generated text. It reads existing storage only, needs no credentials, and performs
+no migrations. `briefBackfill` lists at most 31 older missing/unfinished jobs with
+metadata and total/truncation indicators. Completed capture-only jobs are not
+listed as unfinished. Older work always needs review; discovery never backfills.
+
+Library publish mode is available for controlled integration, with the approved
+provider, prompt/template, private staging folder and delivery transport. It
+recovers today's unfinished work using frozen input; announcement retries reuse
+the saved link and UUID. Review-required jobs are not automatically repaired.
+Changed frozen generation or publishing configuration blocks progress visibly.
+A scheduled invocation passes the next Nairobi midnight as its exclusive deadline;
+model requests are bounded by remaining time and Doc mutations reserve 15 seconds.
+Expired work is surfaced the next day instead of automatically publishing late.
+Restore pauses capture, generation, Doc changes and announcements.
+
+Before activation, establish worker credentials, approved data processing, private
+folder ownership/permissions, management editor access and an authorized private
+live appearance/access test. Free-tier demonstrations remain synthetic only.
+No publishing configuration or live permission is implied by enabling capture.
+
 ## Inspect and recover ordinary work
 
 ```bash

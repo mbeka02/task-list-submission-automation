@@ -30,13 +30,14 @@ The workflow replaces manually checking **DB STUDIO EXTERNAL** and compiling the
 | Monday–Friday, excluding reviewed Kenyan public holidays | Eligible working days |
 | 09:30 to just before 10:00 | Prepare the reminder for the source group; allow same-day catch-up |
 | At or after 10:01 | Read that day's messages originally sent from midnight through **10:00:59.999 inclusive** (before 10:01), then freeze the management report |
+| At or after 10:15, when enabled | Freeze a separate brief capture of sends before 10:15; label sends from 10:01 as late |
 | Startup and after each completed check | Recover today's unfinished work; default delay is 60 seconds |
 
 Only supported text and rich-text task lists posted in the main conversation count. Thread replies are excluded in v1. The reader uses the latest content it observes during compilation; it does not reconstruct what an edited message looked like exactly at the cutoff.
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
-The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. Scheduling remains a later slice; no worker command activates this path yet.
+The optional AI brief is being developed separately. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. The scheduler now supports this path independently at 10:15. The worker CLI permits capture-only opt-in; model calls, Doc publication and sending remain disabled in that command.
 
 ## System design
 
@@ -80,15 +81,16 @@ flowchart TB
 
 **Legend:** blue = Lark groups; green = worker modules; purple = persistent storage; amber = configuration; orange = outbound adapter. Dashed arrows require future activation. The coordinator records outcomes back into SQLite; that return path is omitted to keep the diagram readable.
 
-**Optional AI brief — implemented modules and remaining integration**
+**Optional AI brief — scheduled capture and opt-in library publication**
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"sans-serif","fontSize":"15px","lineColor":"#64748b","primaryTextColor":"#0f172a","edgeLabelBackground":"#f8fafc"},"flowchart":{"curve":"linear","nodeSpacing":45,"rankSpacing":40}}}%%
 flowchart TB
+    SCHEDULE_AI["Optional due-work check<br/>10:15 · Nairobi working days"]:::worker
     SOURCE_AI["DB STUDIO EXTERNAL<br/>Same source and user OAuth"]:::lark
     CAPTURE["Brief submission reader<br/>Before 10:15 · late from 10:01"]:::worker
     INPUT[("SQLite frozen brief input<br/>Task text · names · evidence · versions")]:::storage
-    COORD["Brief coordinator · manual S10<br/>Claims · 2 attempts / 45 seconds · fallback"]:::worker
+    COORD["Brief coordinator · publish mode<br/>Claims · 2 attempts / 45 seconds · fallback"]:::worker
     SELECT["Provider factory · BriefGenerator<br/>Template + instructions + opaque task references"]:::worker
     GEMINI["Gemini · official SDK<br/>Minimal thinking · one attempt"]:::provider
     DEEPSEEK["DeepSeek · native fetch<br/>Thinking disabled · one attempt"]:::provider
@@ -97,9 +99,10 @@ flowchart TB
     LINK["Saved Doc link + existing delivery ledger<br/>Claims · stable UUID · acknowledgement"]:::worker
     MANAGEMENT["MANAGEMENT GROUP<br/>Brief supplements the names report"]:::lark
 
+    SCHEDULE_AI --> CAPTURE
     SOURCE_AI --> CAPTURE
     CAPTURE --> INPUT
-    INPUT --> COORD
+    INPUT -.->|Library publish mode| COORD
     COORD --> SELECT
     SELECT -->|Select one| GEMINI
     SELECT -->|Select one| DEEPSEEK
@@ -116,7 +119,7 @@ flowchart TB
     classDef planned fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-width:2px,stroke-dasharray:5 4;
 ```
 
-**Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The brief path is implemented as opt-in library operations and is not yet scheduled or enabled in the worker CLI. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
+**Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The scheduler freezes brief input once at/after 10:15. CLI opt-in ends at that capture; the dashed edge requires library publish configuration and separate activation. Core failures do not suppress brief reads, and brief failures do not suppress core work. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
 
 History reads use the approved user's access because the source is an external group. Sending uses the approved app bot and explicit destination scope. Both stay bound to the same app ID; neither falls back to another account or group.
 
@@ -128,7 +131,7 @@ History reads use the approved user's access because the source is an external g
 4. **Freeze a consistent report.** In one SQLite write transaction, save relevant observed evidence, the selected entries, exact report text, policy version and a stable send UUID. Either the whole report is committed or none of it is. An existing frozen report is reused; a complete, valid empty scan produces explicit zero-submission text.
 5. **Deliver saved work when activated.** Claim one eligible delivery in SQLite, commit the claim, then make the Lark request outside the transaction. Record the acknowledgement or recovery state. Subsequent attempts use the saved text and UUID, without rereading or recompiling the report.
 
-The 60-second interval is a **due-work check**, not continuous submission polling. A normal run completes one history scan per report date; blocked/incomplete scans can be retried. Restarting recovers today's work. Older missed reports are shown for reviewed backfill rather than sent automatically.
+The 60-second interval is a **due-work check**, not continuous submission polling. A normal run completes one history scan per names-report date and, when enabled, one additional scan for the brief; blocked/incomplete scans can be retried. Restarting recovers today's work. Older missed reports are shown for reviewed backfill rather than sent automatically.
 
 A qualifying list needs a heading such as **To Do**, **To-Do List**, **Todo List**, **Task List** or **Do List**, followed by at least one non-empty numbered or bulleted line. Headings are case-insensitive; extra spaces or tabs between “to” and “do,” including around a hyphen, are accepted (for example, `TO  DO LIST` or `To - Do list`). Personal prefixes, possessive names (including a missing apostrophe or a backtick), weekdays, trailing full stops and an English day/month date on the heading line are supported. Item markers include `1.`, `1)`, `1:`, `(1)`, `-`, `*` and `•`; skipped or repeated numbers do not invalidate a list. This checks submission structure, not task quality or completion. Heading names/dates never override the platform sender or send timestamp. Numbered announcements, weekly reports and loose mentions of a to-do list do not qualify; ambiguous candidates remain visible for review.
 
@@ -349,7 +352,7 @@ For the current **free-tier demo**, use synthetic, non-confidential input only; 
 
 ### Bounded brief generation and fallback
 
-`openBriefCoordinator({ ...briefLedgerOptions, generator, template, instructions, clock?, docPublishing?, transport? })` exposes `completeDailyBrief({ briefId, now })`, `getBrief(briefId)`, `getDelivery(id)` and `close()`. Call it with an already-frozen brief and matching provider/model and policy/template/prompt/schema versions. The worker CLI does not invoke it yet.
+`openBriefCoordinator({ ...briefLedgerOptions, generator, template, instructions, clock?, docPublishing?, transport? })` exposes `completeDailyBrief({ briefId, now, deadlineMs? })`, `getBrief(briefId)`, `getDelivery(id)` and `close()`. Call it with an already-frozen brief and matching provider/model and policy/template/prompt/schema versions. Library worker publish mode invokes it with a deadline at the next Nairobi midnight. CLI capture-only never invokes it.
 
 - Reserve at most **two** model attempts before networking, within **45 seconds** from the original start. Each request lasts at most 15 seconds or the remaining budget. Restart preserves consumed reservations and the deadline.
 - Retry only transient failures, once. A fitting `Retry-After` is persisted and honored; otherwise the default delay is one second. Permanent, refused, truncated or invalid output goes directly to fallback.
@@ -385,6 +388,10 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
 | `WORKER_CHECK_INTERVAL_MS` | Delay after each completed check; default `60000` |
 | `WORKER_RESTORE_MODE` | Pause work during recovery; a persistent restore marker also enforces the pause |
+| `ENABLE_DAILY_BRIEF`, `BRIEF_MODE` | Default `false`; opt in with `true` and `capture_only`. CLI rejects `publish` |
+| `BRIEF_ACTIVATION_DATE` | Explicit reviewed start date within calendar coverage, on/after core activation |
+| `BRIEF_PROVIDER`, `GEMINI_MODEL` / `DEEPSEEK_MODEL` | Freeze provider/model metadata; no model key is required for capture/status |
+| `BRIEF_TEMPLATE_VERSION`, `BRIEF_PROMPT_VERSION`, `BRIEF_SCHEMA_VERSION` | Explicit versions recorded with frozen input |
 
 No approved annual holiday dataset or initial worker OAuth login command is bundled. The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
 
@@ -401,6 +408,10 @@ pnpm worker run
 ```
 
 `run --once` performs one due check; `run` checks at startup and then waits the configured interval after each check. They may read Lark and freeze preview records, but do not send. The ledger opens with packaged migrations. `status` needs an existing migrated ledger and reviewed calendar/scope configuration, but no SDK credentials or Lark connection.
+
+With the optional brief enabled, `run` captures qualifying sends in `[midnight, 10:15)` after 10:15, even when it starts later that day. It reuses today's frozen input on restart, without rereading or expanding that interval. `status` reports `brief` and metadata-only `briefBackfill` (at most 31 older items). Older missing or unfinished jobs require reviewed manual work; they are never automatically generated or published. Restore pauses all work. Changing frozen generation versions blocks publication with a visible reason.
+
+In library publish mode, the coordinator owns model attempts, fallback, verified Doc publication and saved-link delivery. Scheduled model calls, Doc mutations and sends stop at the next Nairobi midnight; Doc operations reserve their 15-second timeout within that window. Link retries never regenerate content or overwrite human edits. The CLI still rejects both `BRIEF_MODE=publish` and `ENABLE_OUTBOUND=true`.
 
 Inspect a frozen delivery locally:
 
@@ -447,7 +458,7 @@ Each phase/slice starts on its own branch from current `main`. Use coherent, pur
 | --- | --- |
 | [src/evaluate-submissions.ts](src/evaluate-submissions.ts) | Task-list classification, names and distinct sender selection |
 | [src/submission-history.ts](src/submission-history.ts) | Paginated, bounded Lark history reads |
-| [src/brief-submissions.ts](src/brief-submissions.ts) | Optional brief input capture, shared validity rules and late labels; not yet scheduled |
+| [src/brief-submissions.ts](src/brief-submissions.ts) | Optional brief input capture, shared validity rules and late labels; scheduled independently at 10:15 |
 | [src/brief-coordinator.ts](src/brief-coordinator.ts) | Bounded generation, source fallback, fenced Doc publication and announcement recovery |
 | [src/lark-brief-doc.ts](src/lark-brief-doc.ts) | App-only native Doc rendering, bounded SDK calls, canonical readback and editor access |
 | [src/brief-content.ts](src/brief-content.ts) | Document-input and operational attempt types |

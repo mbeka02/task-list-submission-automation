@@ -206,6 +206,174 @@ async function setup(
   };
 }
 
+test("closes tenant-readable defaults on an app-owned Doc before writing the brief", async () => {
+  let linkSharing = "tenant_readable";
+  const { coordinator, briefId } = await setup((request, result) => {
+    if (request.path.endsWith("/public")) {
+      if (request.method === "PATCH") {
+        if (
+          JSON.stringify(request.body) !==
+          JSON.stringify({ link_share_entity: "closed" })
+        )
+          return { body: { code: 400, msg: "Unexpected permission change" } };
+        linkSharing = "closed";
+      }
+      return {
+        body: {
+          code: 0,
+          data: { permission_public: { link_share_entity: linkSharing } },
+        },
+      };
+    }
+    if (request.path.endsWith("/members") && request.method === "GET") {
+      const body = result.body as { data: { items: unknown[] } };
+      if (body.data.items.length === 0)
+        return {
+          body: {
+            code: 0,
+            data: {
+              items: [
+                {
+                  member_id: config.appId,
+                  member_type: "appid",
+                  perm: "full_access",
+                },
+              ],
+            },
+          },
+        };
+    }
+    if (request.path.endsWith("/children") && linkSharing !== "closed")
+      return { body: { code: 403, msg: "Content must remain private" } };
+    return undefined;
+  });
+  expect(await coordinator.completeDailyBrief({ briefId, now })).toMatchObject({
+    status: "published",
+  });
+  expect(linkSharing).toBe("closed");
+});
+
+test("does not change sharing when the new Doc is owned by another app", async () => {
+  let linkSharing = "tenant_readable";
+  const { coordinator, briefId, blocks } = await setup((request) => {
+    if (request.path.endsWith("/public")) {
+      if (request.method === "PATCH") linkSharing = "closed";
+      return {
+        body: {
+          code: 0,
+          data: { permission_public: { link_share_entity: linkSharing } },
+        },
+      };
+    }
+    if (request.path.endsWith("/members") && request.method === "GET")
+      return {
+        body: {
+          code: 0,
+          data: {
+            items: [
+              {
+                member_id: "cli_other",
+                member_type: "appid",
+                perm: "full_access",
+              },
+            ],
+          },
+        },
+      };
+    return undefined;
+  });
+  expect(await coordinator.completeDailyBrief({ briefId, now })).toMatchObject({
+    status: "review_required",
+  });
+  expect(linkSharing).toBe("tenant_readable");
+  expect(blocks()).toEqual([]);
+});
+
+test("an acknowledged privacy change must be confirmed before any brief content is written", async () => {
+  const { coordinator, briefId, blocks } = await setup((request, result) => {
+    if (request.path.endsWith("/public"))
+      return {
+        body: {
+          code: 0,
+          data: {
+            permission_public: {
+              link_share_entity:
+                request.method === "PATCH" ? "closed" : "tenant_readable",
+            },
+          },
+        },
+      };
+    if (request.path.endsWith("/members") && request.method === "GET")
+      return {
+        body: {
+          code: 0,
+          data: {
+            items: [
+              {
+                member_id: config.appId,
+                member_type: "appid",
+                perm: "full_access",
+              },
+            ],
+          },
+        },
+      };
+    return result;
+  });
+  expect(await coordinator.completeDailyBrief({ briefId, now })).toMatchObject({
+    status: "review_required",
+  });
+  expect(blocks()).toEqual([]);
+});
+
+test("rechecks collaborators after closing the new Doc's link access", async () => {
+  let closed = false;
+  const { coordinator, briefId, blocks } = await setup((request) => {
+    if (request.path.endsWith("/public")) {
+      if (request.method === "PATCH") closed = true;
+      return {
+        body: {
+          code: 0,
+          data: {
+            permission_public: {
+              link_share_entity: closed ? "closed" : "tenant_readable",
+            },
+          },
+        },
+      };
+    }
+    if (request.path.endsWith("/members") && request.method === "GET")
+      return {
+        body: {
+          code: 0,
+          data: {
+            items: [
+              {
+                member_id: config.appId,
+                member_type: "appid",
+                perm: "full_access",
+              },
+              ...(closed
+                ? [
+                    {
+                      member_id: "ou_unapproved",
+                      member_type: "openid",
+                      perm: "view",
+                    },
+                  ]
+                : []),
+            ],
+          },
+        },
+      };
+    return undefined;
+  });
+  expect(await coordinator.completeDailyBrief({ briefId, now })).toMatchObject({
+    status: "review_required",
+  });
+  expect(blocks()).toEqual([]);
+});
+
 test("publishes a formatted private Doc with verified management editor access and a durable link announcement", async () => {
   const { coordinator, provider, lark, briefId, blocks, members } =
     await setup();

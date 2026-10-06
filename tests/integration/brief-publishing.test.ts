@@ -798,3 +798,26 @@ test("a readback page without an explicit completion flag cannot authorize publi
     ),
   ).toHaveLength(0);
 });
+
+test("a scheduled work deadline crossed during Doc privacy checks stops content writes and sharing", async () => {
+  let current = now;
+  const deadlineMs = now + 60000;
+  const { coordinator, lark, briefId } = await setup(
+    (request) => {
+      if (request.path.endsWith("/public")) current = deadlineMs;
+      return undefined;
+    },
+    { clock: () => current },
+  );
+  expect(
+    (await coordinator.completeDailyBrief({ briefId, now, deadlineMs })).status,
+  ).toBe("review_required");
+  expect(
+    lark.requests.filter(
+      (r) =>
+        r.path.endsWith("/children") ||
+        (r.method === "POST" && r.path.endsWith("/members")) ||
+        r.path === "/open-apis/im/v1/messages",
+    ),
+  ).toHaveLength(0);
+});

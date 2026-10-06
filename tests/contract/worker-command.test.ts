@@ -84,6 +84,32 @@ test("worker status inspects existing state without SDK credentials or database 
   }
 });
 
+test("brief status opts into capture-only without model credentials or storage writes", () => {
+  const environment = fixture();
+  try {
+    const before = readFileSync(environment.databasePath);
+    const result = command(environment, ["status"], {
+      ENABLE_DAILY_BRIEF: "true",
+      BRIEF_MODE: "capture_only",
+      BRIEF_ACTIVATION_DATE: "2026-10-01",
+      BRIEF_PROVIDER: "gemini",
+      GEMINI_MODEL: "synthetic-model",
+      BRIEF_TEMPLATE_VERSION: "template-v1",
+      BRIEF_PROMPT_VERSION: "prompt-v1",
+      BRIEF_SCHEMA_VERSION: "schema-v1",
+      WORKER_TEST_NOW: "2026-10-02T07:15:00Z",
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      brief: { state: "due", mode: "capture_only" },
+      briefBackfill: { dates: ["2026-10-01"] },
+    });
+    expect(readFileSync(environment.databasePath)).toEqual(before);
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
 test("worker commands reject unsafe modes, outbound settings and arguments without leaking secrets", () => {
   const environment = fixture();
   try {
@@ -92,6 +118,13 @@ test("worker commands reject unsafe modes, outbound settings and arguments witho
       { ENABLE_OUTBOUND: "yes" },
       { APP_MODE: "prodution" },
       { BUSINESS_TIMEZONE: "UTC" },
+      { ENABLE_DAILY_BRIEF: "yes" },
+      { ENABLE_DAILY_BRIEF: "true", BRIEF_MODE: "publish" },
+      {
+        ENABLE_DAILY_BRIEF: "true",
+        BRIEF_MODE: "unknown",
+        BRIEF_PROVIDER: "gemini",
+      },
     ]) {
       const result = command(environment, ["status"], {
         ...settings,

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, gte, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import type { BriefEntry, BriefScan } from "./brief-submissions.js";
@@ -26,6 +26,8 @@ export interface BriefLedgerOptions {
   schemaVersion: string;
   provider: "gemini" | "deepseek";
   model: string;
+  /** Inspect existing migrated storage without creating files, applying migrations or changing WAL mode. */
+  readOnly?: boolean;
 }
 
 /** A classified history capture from S7; only complete, resolved captures may be frozen. */
@@ -69,16 +71,24 @@ class EvidenceConflict extends Error {}
 
 /** Open the SQLite brief ledger; short immediate transactions freeze input before generation begins. */
 export function openBriefLedger(options: BriefLedgerOptions) {
-  const sqlite = new Database(options.databasePath);
+  const sqlite = new Database(options.databasePath, {
+    readonly: options.readOnly ?? false,
+    fileMustExist: options.readOnly ?? false,
+  });
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("synchronous = FULL");
+  if (!options.readOnly) {
+    sqlite.pragma("journal_mode = WAL");
+    sqlite.pragma("synchronous = FULL");
+  }
   const db = drizzle(sqlite);
   try {
-    migrate(db, {
-      migrationsFolder: fileURLToPath(new URL("../drizzle/", import.meta.url)),
-    });
+    if (!options.readOnly)
+      migrate(db, {
+        migrationsFolder: fileURLToPath(
+          new URL("../drizzle/", import.meta.url),
+        ),
+      });
   } catch (error) {
     sqlite.close();
     throw error;
@@ -121,6 +131,8 @@ export function openBriefLedger(options: BriefLedgerOptions) {
 
   /** Return the original input on repeat preparation, regardless of later edits or model changes. */
   function prepareDailyBrief(input: PrepareBriefInput) {
+    if (options.readOnly)
+      return { status: "blocked" as const, reasons: ["inspection_only"] };
     const id = hash([
       options.appId,
       input.businessDate,
@@ -356,5 +368,48 @@ export function openBriefLedger(options: BriefLedgerOptions) {
       throw error;
     }
   }
-  return { prepareDailyBrief, getBrief, close: () => sqlite.close() };
+  /** Read one initial scoped job; repeat preparation and recovery share this identity. */
+  function getDailyBrief(businessDate: string) {
+    return getBrief(
+      hash([
+        options.appId,
+        businessDate,
+        options.sourceChatId,
+        options.destinationChatId,
+        1,
+      ]),
+    );
+  }
+  /** Bounded date-range metadata for status/backfill, excluding task bodies and generated content. */
+  function listDailyBriefs(fromDate: string, throughDate: string) {
+    return db
+      .select({
+        id: dailyBriefs.id,
+        businessDate: dailyBriefs.businessDate,
+        generationState: dailyBriefs.generationState,
+        publicationState: dailyBriefs.publicationState,
+        documentUrl: dailyBriefs.documentUrl,
+        announcementDeliveryId: dailyBriefs.announcementDeliveryId,
+      })
+      .from(dailyBriefs)
+      .where(
+        and(
+          eq(dailyBriefs.appId, options.appId),
+          eq(dailyBriefs.sourceChatId, options.sourceChatId),
+          eq(dailyBriefs.destinationChatId, options.destinationChatId),
+          eq(dailyBriefs.revision, 1),
+          gte(dailyBriefs.businessDate, fromDate),
+          lte(dailyBriefs.businessDate, throughDate),
+        ),
+      )
+      .orderBy(asc(dailyBriefs.businessDate))
+      .all();
+  }
+  return {
+    prepareDailyBrief,
+    getBrief,
+    getDailyBrief,
+    listDailyBriefs,
+    close: () => sqlite.close(),
+  };
 }

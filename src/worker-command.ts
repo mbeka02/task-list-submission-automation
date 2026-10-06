@@ -1,5 +1,9 @@
 import { lstatSync, readFileSync } from "node:fs";
-import { createDueWorker, type HolidayCalendar } from "./due-worker.js";
+import {
+  createDueWorker,
+  type DueWorkerOptions,
+  type HolidayCalendar,
+} from "./due-worker.js";
 
 const reminderText =
   "Please post today's task list in this group by 10:00 AM Nairobi time.";
@@ -44,6 +48,31 @@ function loadCalendar(path: string): HolidayCalendar {
   }
 }
 
+/** Opt-in capture records provider/version metadata without loading a model key or publisher. */
+function briefConfiguration(): DueWorkerOptions["brief"] {
+  const enabled = process.env.ENABLE_DAILY_BRIEF ?? "false";
+  if (enabled === "false") return undefined;
+  if (enabled !== "true") throw new Error("invalid_worker_configuration");
+  const mode = process.env.BRIEF_MODE ?? "capture_only";
+  if (mode === "publish")
+    throw new Error("brief_publishing_requires_activation");
+  const provider = required("BRIEF_PROVIDER");
+  if (
+    mode !== "capture_only" ||
+    (provider !== "gemini" && provider !== "deepseek")
+  )
+    throw new Error("invalid_worker_configuration");
+  return {
+    mode,
+    activationDate: required("BRIEF_ACTIVATION_DATE"),
+    provider,
+    model: required(provider === "gemini" ? "GEMINI_MODEL" : "DEEPSEEK_MODEL"),
+    templateVersion: required("BRIEF_TEMPLATE_VERSION"),
+    promptVersion: required("BRIEF_PROMPT_VERSION"),
+    schemaVersion: required("BRIEF_SCHEMA_VERSION"),
+  };
+}
+
 /** Configure inspection or preview work; no outbound adapter is installed in this slice. */
 function openWorker(inspect: boolean) {
   const appId = required("LARK_APP_ID");
@@ -51,6 +80,7 @@ function openWorker(inspect: boolean) {
   const restore = process.env.WORKER_RESTORE_MODE ?? "false";
   if (restore !== "true" && restore !== "false")
     throw new Error("invalid_worker_configuration");
+  const brief = briefConfiguration();
   return createDueWorker({
     databasePath: required("SQLITE_FILE_PATH"),
     appId,
@@ -64,6 +94,7 @@ function openWorker(inspect: boolean) {
     },
     reminderText,
     readOnly: inspect,
+    ...(brief ? { brief } : {}),
     restoreMode: restore === "true",
     reader: inspect
       ? {
@@ -134,7 +165,8 @@ async function main() {
         result.status === "blocked" ||
         (!inspect &&
           result.status !== "paused" &&
-          result.report.state === "blocked")
+          (result.report.state === "blocked" ||
+            result.brief.state === "blocked"))
           ? 1
           : 0;
       if (!continuous || stopped) break;
@@ -163,6 +195,7 @@ try {
     "invalid_calendar_file",
     "invalid_worker_configuration",
     "outbound_requires_activation",
+    "brief_publishing_requires_activation",
   ];
   console.log(
     JSON.stringify({

@@ -861,3 +861,17 @@ test("replays an empty brief after restart without model work or a new hash", as
   });
   expect(server.origins).toHaveLength(0);
 });
+
+test("an expired caller work deadline prevents even the first model request", async () => {
+  const server = await briefProviderHttpServer(() => ({
+    body: modelResponse(),
+  }));
+  cleanups.push(server.close);
+  const { databasePath, briefId } = prepared();
+  const worker = coordinator(databasePath);
+  expect(
+    await worker.completeDailyBrief({ briefId, now: start, deadlineMs: start }),
+  ).toMatchObject({ status: "not_started", reason: "work_window_expired" });
+  expect(server.requests).toHaveLength(0);
+  expect(worker.getBrief(briefId)?.generationAttemptCount).toBe(0);
+});

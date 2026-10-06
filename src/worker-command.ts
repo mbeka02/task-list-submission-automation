@@ -1,9 +1,16 @@
 import { lstatSync, readFileSync } from "node:fs";
+import type { Logger } from "pino";
 import {
   createDueWorker,
   type DueWorkerOptions,
   type HolidayCalendar,
 } from "./due-worker.js";
+import {
+  createOperationalLogger,
+  type EntryPoint,
+  operationalEvent,
+  withObservedRun,
+} from "./observability.js";
 
 const reminderText =
   "Please post today's task list in this group by 10:00 AM Nairobi time.";
@@ -74,7 +81,7 @@ function briefConfiguration(): DueWorkerOptions["brief"] {
 }
 
 /** Configure inspection or preview work; no outbound adapter is installed in this slice. */
-function openWorker(inspect: boolean) {
+function openWorker(inspect: boolean, logger: Logger, entryPoint: EntryPoint) {
   const appId = required("LARK_APP_ID");
   const sourceChatId = required("SOURCE_CHAT_ID");
   const restore = process.env.WORKER_RESTORE_MODE ?? "false";
@@ -82,6 +89,8 @@ function openWorker(inspect: boolean) {
     throw new Error("invalid_worker_configuration");
   const brief = briefConfiguration();
   return createDueWorker({
+    logger,
+    entryPoint,
     databasePath: required("SQLITE_FILE_PATH"),
     appId,
     sourceChatId,
@@ -116,7 +125,7 @@ function openWorker(inspect: boolean) {
 }
 
 /** Run startup/periodic checks serially; shutdown waits for the active check before closing SQLite. */
-async function main() {
+async function main(logger: Logger) {
   // New SQLite/WAL files must stay private even when the host's default mask is permissive.
   process.umask(0o077);
   const mode = process.env.APP_MODE ?? "preview";
@@ -139,7 +148,11 @@ async function main() {
   const interval = Number(process.env.WORKER_CHECK_INTERVAL_MS ?? 60_000);
   if (!Number.isSafeInteger(interval) || interval < 1000 || interval > 3600_000)
     throw new Error("invalid_worker_configuration");
-  const worker = openWorker(inspect);
+  const worker = openWorker(
+    inspect,
+    logger,
+    inspect ? "worker_status" : once ? "worker_once" : "worker_startup",
+  );
   let stopped = false;
   let cancelWait: (() => void) | null = null;
   /** Stop scheduling more work and release an idle wait; leave an active attempt to finish. */
@@ -153,10 +166,30 @@ async function main() {
   }
   try {
     let previous = "";
+    let firstCheck = true;
     do {
-      const result = inspect
-        ? worker.getStatus({ now: Date.now() })
-        : await worker.runDueWork({ now: Date.now() });
+      const entryPoint = inspect
+        ? "worker_status"
+        : once
+          ? "worker_once"
+          : firstCheck
+            ? "worker_startup"
+            : "worker_periodic";
+      const result = await withObservedRun(
+        { logger, entryPoint },
+        entryPoint,
+        async () => {
+          if (!inspect) return worker.runDueWork({ now: Date.now() });
+          const status = worker.getStatus({ now: Date.now() });
+          operationalEvent(
+            status.status === "blocked" ? "warn" : "info",
+            "worker_status_inspected",
+            { status: status.status, businessDate: status.businessDate },
+          );
+          return status;
+        },
+      );
+      firstCheck = false;
       const rendered = JSON.stringify({ ...result, outboundEnabled: false });
       // Emit changed operator state, keeping unchanged minute checks quiet.
       if (rendered !== previous) console.log(rendered);
@@ -186,8 +219,12 @@ async function main() {
   }
 }
 
+let commandLogger: Logger | undefined;
 try {
-  await main();
+  commandLogger = createOperationalLogger({
+    level: process.env.LOG_LEVEL ?? "info",
+  });
+  await main(commandLogger);
 } catch (error) {
   const known = [
     "invalid_arguments",
@@ -196,14 +233,29 @@ try {
     "invalid_worker_configuration",
     "outbound_requires_activation",
     "brief_publishing_requires_activation",
+    "invalid_log_level",
   ];
+  const reason =
+    error instanceof Error && known.includes(error.message)
+      ? error.message
+      : "storage_unavailable";
+  const entryPoint =
+    process.argv[2] === "status"
+      ? "worker_status"
+      : process.argv.includes("--once")
+        ? "worker_once"
+        : "worker_startup";
+  withObservedRun(
+    { logger: commandLogger ?? createOperationalLogger(), entryPoint },
+    entryPoint,
+    () => {
+      operationalEvent("error", "worker_command_failed", { reason });
+    },
+  );
   console.log(
     JSON.stringify({
       status: "blocked",
-      reason:
-        error instanceof Error && known.includes(error.message)
-          ? error.message
-          : "storage_unavailable",
+      reason,
       outboundEnabled: false,
     }),
   );

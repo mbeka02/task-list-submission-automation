@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { createDueWorker } from "../../src/due-worker.js";
 import { createLarkDeliveryTransport } from "../../src/lark-delivery.js";
+import { createOperationalLogger } from "../../src/observability.js";
+import { openReportLedger } from "../../src/report-ledger.js";
 import type { CapturedLarkRequest } from "../support/lark-http-server.js";
 import { larkHttpServer } from "../support/lark-http-server.js";
+import { logCapture } from "../support/log-capture.js";
 
 const reminderText =
   "Please post today's task list in this group by 10:00 AM Nairobi time.";
@@ -130,6 +133,56 @@ async function fixture(initialNow = Date.parse("2026-10-02T06:30:00.000Z")) {
   };
 }
 
+test("a completed report can be followed from history read through acknowledgement using one run ID", async () => {
+  const now = Date.parse("2026-10-02T07:01:00.000Z");
+  const environment = await fixture(now);
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...environment.options,
+    logger: logs.logger,
+    entryPoint: "worker_once",
+  });
+  try {
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "sent" },
+    });
+    expect(logs.events()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "history_read_completed",
+          captureKind: "names",
+          status: "complete",
+          messageCount: 1,
+          durationMs: expect.any(Number),
+        }),
+        expect.objectContaining({
+          event: "report_frozen",
+          entryCount: 1,
+          deliveryId: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+        expect.objectContaining({
+          event: "delivery_completed",
+          status: "sent",
+          attemptCount: 1,
+          durationMs: expect.any(Number),
+        }),
+      ]),
+    );
+    expect(new Set(logs.events().map((event) => event.runId)).size).toBe(1);
+    expect(
+      logs.events().every((event) => event.entryPoint === "worker_once"),
+    ).toBe(true);
+    expect(logs.text()).not.toContain("Anthony");
+    expect(logs.text()).not.toContain("Review infrastructure");
+    expect(logs.text()).not.toContain("synthetic-secret");
+    expect(logs.text()).not.toContain("synthetic-user-token");
+    expect(logs.text()).not.toContain("oc_management");
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
 test("09:30 sends one frozen source-group reminder without reading submissions", async () => {
   const environment = await fixture();
   const worker = createDueWorker(environment.options);
@@ -165,6 +218,190 @@ test("09:30 sends one frozen source-group reminder without reading submissions",
       reminder: { state: "sent" },
     });
     expect(environment.server.requests).toHaveLength(before);
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
+test("a failed history read records a safe reason and a warning without being mistaken for an empty report", async () => {
+  const now = Date.parse("2026-10-02T07:01:00.000Z");
+  const environment = await fixture(now);
+  environment.respondWith(() => ({
+    status: 400,
+    body: { code: 230027, msg: "provider-secret-canary" },
+  }));
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  try {
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "blocked", reason: "source_access_denied" },
+    });
+    expect(logs.events()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "history_read_completed",
+          status: "unavailable",
+          reason: "source_access_denied",
+          providerCode: 230027,
+          level: "warn",
+        }),
+        expect.objectContaining({
+          event: "worker_check_completed",
+          reportState: "blocked",
+          reportReason: "source_access_denied",
+          level: "warn",
+        }),
+      ]),
+    );
+    expect(logs.text()).not.toContain("provider-secret-canary");
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
+test("an uncertain Lark send exposes the durable attempt and safe reason for operator review", async () => {
+  const now = Date.parse("2026-10-02T07:01:00.000Z");
+  const environment = await fixture(now);
+  environment.respondWith((request) =>
+    request.method === "POST" && request.path === "/open-apis/im/v1/messages"
+      ? { body: {}, disconnect: true }
+      : undefined,
+  );
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  try {
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "uncertain", attemptCount: 1 },
+    });
+    expect(logs.events()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "delivery_completed",
+          status: "uncertain",
+          reason: "transport_or_acknowledgement_unknown",
+          attemptCount: 1,
+          level: "warn",
+        }),
+      ]),
+    );
+    expect(logs.text()).not.toContain("Review infrastructure");
+    expect(logs.text()).not.toContain("synthetic-bot-token");
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
+test("a reminder requiring reconciliation marks the worker summary as requiring review", async () => {
+  const now = Date.parse("2026-10-02T06:30:00.000Z");
+  const environment = await fixture(now);
+  const ledger = openReportLedger({
+    ...environment.options,
+    destinationChatId: environment.options.sourceChatId,
+    transport: async () => {
+      throw new Error("synthetic-unknown-send");
+    },
+  });
+  try {
+    const prepared = ledger.prepareReminder({
+      businessDate: "2026-10-02",
+      text: reminderText,
+      policyVersion: "worker-v1/synthetic-calendar-v1",
+    });
+    if (prepared.status !== "frozen")
+      throw new Error("Invalid reminder fixture");
+    await ledger.deliverDelivery({ deliveryId: prepared.delivery.id, now });
+  } finally {
+    ledger.close();
+  }
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  try {
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      reminder: { reconciliationRequired: true },
+    });
+    expect(logs.events()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "worker_check_completed",
+          reminderState: "uncertain",
+          reviewRequired: true,
+          reviewCount: 1,
+          level: "warn",
+        }),
+      ]),
+    );
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
+test("an unavailable logging sink cannot undo an acknowledged delivery or cause a duplicate send", async () => {
+  const now = Date.parse("2026-10-02T07:01:00.000Z");
+  const environment = await fixture(now);
+  const logger = createOperationalLogger({
+    destination: {
+      write: () => {
+        throw new Error("sink-failure-canary");
+      },
+    },
+  });
+  const worker = createDueWorker({ ...environment.options, logger });
+  try {
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "sent", attemptCount: 1 },
+    });
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "sent", attemptCount: 1 },
+    });
+    expect(
+      environment.server.requests.filter(
+        (request) =>
+          request.method === "POST" &&
+          request.path === "/open-apis/im/v1/messages",
+      ),
+    ).toHaveLength(1);
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
+test("unchanged checks stay quiet at info level while retaining a ten-minute liveness heartbeat", async () => {
+  const environment = await fixture(Date.parse("2026-10-02T06:00:00Z"));
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  try {
+    for (const time of ["06:00:00", "06:05:00", "06:10:00"]) {
+      const now = Date.parse(`2026-10-02T${time}Z`);
+      environment.setNow(now);
+      await worker.runDueWork({ now });
+    }
+    const completed = logs
+      .events()
+      .filter((event) => event.event === "worker_check_completed");
+    expect(completed.map((event) => event.level)).toEqual([
+      "info",
+      "debug",
+      "info",
+    ]);
+    expect(new Set(completed.map((event) => event.runId)).size).toBe(3);
+    expect(environment.server.requests).toHaveLength(0);
   } finally {
     worker.close();
     await environment.close();

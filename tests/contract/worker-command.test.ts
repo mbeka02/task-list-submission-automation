@@ -67,6 +67,74 @@ function command(
   );
 }
 
+test("worker emits correlated JSON telemetry on stderr without changing its stdout contract", () => {
+  const environment = fixture();
+  try {
+    const result = command(environment, ["run", "--once"], {
+      WORKER_TEST_NOW: "2026-10-02T06:30:00.000Z",
+      LOG_LEVEL: "debug",
+      LARK_APP_SECRET: "secret-canary-do-not-log",
+      LARK_READER_OPEN_ID: "ou_operator",
+      LARK_USER_CREDENTIAL_FILE: join(environment.directory, "oauth.json"),
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ok",
+      outboundEnabled: false,
+    });
+    const events = result.stderr
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "worker_check_started",
+          entryPoint: "worker_once",
+          runId: expect.any(String),
+        }),
+        expect.objectContaining({
+          event: "worker_check_completed",
+          businessDate: "2026-10-02",
+          status: "ok",
+          reminderState: "pending",
+          durationMs: expect.any(Number),
+        }),
+      ]),
+    );
+    expect(new Set(events.map((event) => event.runId)).size).toBe(1);
+    expect(result.stderr).not.toContain("secret-canary-do-not-log");
+    expect(result.stderr).not.toContain("Please post today's task list");
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
+test("unsafe worker configuration is diagnosable as a structured error without exposing its value", () => {
+  const environment = fixture();
+  try {
+    const result = command(environment, ["run", "--once"], {
+      ENABLE_OUTBOUND: "true",
+      LARK_APP_SECRET: "config-secret-canary",
+    });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "outbound_requires_activation",
+    });
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      event: "worker_command_failed",
+      level: "error",
+      entryPoint: "worker_once",
+      runId: expect.any(String),
+      reason: "outbound_requires_activation",
+    });
+    expect(result.stderr).not.toContain("config-secret-canary");
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
 test("worker status inspects existing state without SDK credentials or database writes", () => {
   const environment = fixture();
   try {
@@ -118,6 +186,7 @@ test("worker commands reject unsafe modes, outbound settings and arguments witho
       { ENABLE_OUTBOUND: "yes" },
       { APP_MODE: "prodution" },
       { BUSINESS_TIMEZONE: "UTC" },
+      { LOG_LEVEL: "secret-invalid-level-canary" },
       { ENABLE_DAILY_BRIEF: "yes" },
       { ENABLE_DAILY_BRIEF: "true", BRIEF_MODE: "publish" },
       {
@@ -224,6 +293,10 @@ test("the continuous command checks at startup and each configured minute then s
     },
   );
   const lines: string[] = [];
+  let telemetry = "";
+  child.stderr.on("data", (data: Buffer) => {
+    telemetry += data.toString();
+  });
   let partial = "";
   child.stdout.on("data", (data: Buffer) => {
     partial += data.toString();
@@ -260,6 +333,16 @@ test("the continuous command checks at startup and each configured minute then s
         outboundEnabled: false,
       },
     ]);
+    const checks = telemetry
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+      .filter((event) => event.event === "worker_check_completed");
+    expect(checks.map((event) => event.entryPoint)).toEqual([
+      "worker_startup",
+      "worker_periodic",
+    ]);
+    expect(new Set(checks.map((event) => event.runId)).size).toBe(2);
   } finally {
     child.kill("SIGKILL");
     rmSync(environment.directory, { recursive: true, force: true });

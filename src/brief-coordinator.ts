@@ -15,12 +15,19 @@ import {
   openLarkBriefDoc,
   renderBriefDoc,
 } from "./lark-brief-doc.js";
+import {
+  type ObservabilityOptions,
+  operationalEvent,
+  withObservedRun,
+} from "./observability.js";
 import { type DeliveryTransport, openReportLedger } from "./report-ledger.js";
 import { dailyBriefs } from "./storage/schema.js";
 import { requiresRestoreReview } from "./storage-recovery.js";
 
 /** Frozen-input scope plus the selected generator; time is injectable for recovery tests. */
-export interface BriefCoordinatorOptions extends BriefLedgerOptions {
+export interface BriefCoordinatorOptions
+  extends BriefLedgerOptions,
+    ObservabilityOptions {
   generator: BriefGenerator;
   template: string;
   instructions: string;
@@ -44,7 +51,7 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
   const getBrief = ledger.getBrief;
 
   /** Reserve attempts before networking, then freeze operational metadata only. */
-  async function completeDailyBrief({
+  async function executeDailyBrief({
     briefId,
     now,
     deadlineMs,
@@ -217,6 +224,15 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         .run();
       if (!saved.changes)
         return { status: "not_started" as const, reason: "claim_lost" };
+      operationalEvent(
+        content.kind === "fallback" ? "warn" : "info",
+        "brief_content_prepared",
+        {
+          businessDate: content.businessDate,
+          kind: content.kind,
+          entryCount: content.rows.length,
+        },
+      );
       return docs
         ? publish(briefId, content, deadlineMs)
         : { status: "ready" as const, content };
@@ -307,10 +323,23 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
       }, allowance);
       timer.unref();
       let result: BriefGenerationResult;
+      const attemptStarted = performance.now();
+      operationalEvent("debug", "model_attempt_started", {
+        provider: options.provider,
+        attempt: number,
+      });
       try {
         result = await options.generator.generate(request, {
           signal: controller.signal,
         });
+      } catch (error) {
+        operationalEvent("error", "model_attempt_failed", {
+          provider: options.provider,
+          attempt: number,
+          reason: "execution_unavailable",
+          durationMs: Math.round(performance.now() - attemptStarted),
+        });
+        throw error;
       } finally {
         clearTimeout(timer);
       }
@@ -325,6 +354,27 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         };
 
       const completedAtMs = clock();
+      operationalEvent(
+        result.status === "generated" ? "info" : "warn",
+        "model_attempt_completed",
+        {
+          provider: options.provider,
+          attempt: number,
+          status: result.status,
+          durationMs: Math.round(performance.now() - attemptStarted),
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          thinkingTokens: result.usage.thinkingTokens,
+          totalTokens: result.usage.totalTokens,
+          ...(result.status === "failed"
+            ? {
+                reason: result.reason,
+                classification: result.classification,
+                retryAfterMs: result.retryAfterMs,
+              }
+            : {}),
+        },
+      );
       const retryDelay =
         result.status === "failed" &&
         result.classification === "transient" &&
@@ -405,6 +455,29 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     }
     return finish(sourceContent(brief));
   }
+  /** Time publication stages without recording document identifiers, body, URL or provider exceptions. */
+  async function documentStep<T>(
+    stage: "authenticate" | "create" | "privacy" | "write" | "verify" | "share",
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const started = performance.now();
+    try {
+      const result = await work();
+      operationalEvent("info", "document_step_completed", {
+        stage,
+        durationMs: Math.round(performance.now() - started),
+      });
+      return result;
+    } catch (error) {
+      operationalEvent("warn", "document_step_failed", {
+        stage,
+        reason: "document_operation_unverified",
+        durationMs: Math.round(performance.now() - started),
+      });
+      throw error;
+    }
+  }
+
   /** Fence publication mutations against restore pause, lease expiry and a replacement owner. */
   function publicationFence(
     briefId: string,
@@ -476,9 +549,11 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     );
     const fence = publicationFence(briefId, token, deadlineMs);
     try {
-      await docs.authenticate();
+      await documentStep("authenticate", () => docs.authenticate());
       fence.guard();
-      const created = await docs.create(content.title);
+      const created = await documentStep("create", () =>
+        docs.create(content.title),
+      );
       const id = new URL(created.url).pathname.split("/").at(-1);
       if (!id) throw new Error("Doc reference unavailable");
       fence.save({
@@ -486,25 +561,31 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         documentRevision: created.revision,
         publicationState: "writing",
       });
-      await docs.preparePrivate(id, fence.guard);
+      await documentStep("privacy", () => docs.preparePrivate(id, fence.guard));
       let revision = created.revision;
       const tokens: string[] = [];
       for (let offset = 0; offset < rendered.blocks.length; offset += 50) {
         tokens.push(randomUUID());
         fence.save({ documentWriteTokens: [...tokens] });
         fence.guard();
-        revision = await docs.write(
-          id,
-          rendered.blocks.slice(offset, offset + 50),
-          tokens.at(-1) ?? "",
-          revision,
+        revision = await documentStep("write", () =>
+          docs.write(
+            id,
+            rendered.blocks.slice(offset, offset + 50),
+            tokens.at(-1) ?? "",
+            revision,
+          ),
         );
         fence.save({ documentRevision: revision });
       }
       fence.save({ publicationState: "verifying" });
-      revision = await docs.verify(id, content.title, rendered.hash);
+      revision = await documentStep("verify", () =>
+        docs.verify(id, content.title, rendered.hash),
+      );
       fence.save({ publicationState: "sharing", documentRevision: revision });
-      await docs.share(id, options.destinationChatId, fence.guard);
+      await documentStep("share", () =>
+        docs.share(id, options.destinationChatId, fence.guard),
+      );
       fence.guard();
       fence.save({
         publicationState: "verified",
@@ -601,15 +682,16 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
     );
     const fence = publicationFence(briefId, token, deadlineMs);
     try {
-      await docs.authenticate();
+      await documentStep("authenticate", () => docs.authenticate());
       const id = new URL(brief.documentUrl).pathname.split("/").at(-1);
       if (!id) throw new Error("Doc reference unavailable");
-      const revision = await docs.verify(
-        id,
-        `Today's brief — ${brief.businessDate}`,
-        brief.documentHash,
+      const documentHash = brief.documentHash;
+      const revision = await documentStep("verify", () =>
+        docs.verify(id, `Today's brief — ${brief.businessDate}`, documentHash),
       );
-      await docs.share(id, options.destinationChatId, fence.guard);
+      await documentStep("share", () =>
+        docs.share(id, options.destinationChatId, fence.guard),
+      );
       fence.guard();
       fence.save({
         publicationState: "verified",
@@ -634,6 +716,43 @@ export function openBriefCoordinator(options: BriefCoordinatorOptions) {
         reason: "document_operation_unverified",
       };
     }
+  }
+  /** Emit only operational state; the content returned to the caller never enters telemetry. */
+  async function completeDailyBrief(
+    input: Parameters<typeof executeDailyBrief>[0],
+  ) {
+    return withObservedRun(
+      options,
+      "brief_api",
+      async () => {
+        const started = performance.now();
+        operationalEvent("debug", "brief_started");
+        try {
+          const result = await executeDailyBrief(input);
+          operationalEvent(
+            result.status === "blocked" || result.status === "review_required"
+              ? "warn"
+              : result.status === "not_started"
+                ? "debug"
+                : "info",
+            "brief_completed",
+            {
+              status: result.status,
+              durationMs: Math.round(performance.now() - started),
+              ...("reason" in result ? { reason: result.reason } : {}),
+            },
+          );
+          return result;
+        } catch (error) {
+          operationalEvent("error", "brief_failed", {
+            reason: "execution_unavailable",
+            durationMs: Math.round(performance.now() - started),
+          });
+          throw error;
+        }
+      },
+      { briefId: input.briefId },
+    );
   }
   return {
     completeDailyBrief,

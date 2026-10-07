@@ -1,0 +1,5 @@
+# Validate with visudo -cf before installing as root:root, mode 0440.
+Defaults:task-list-deploy env_reset
+Defaults:task-list-deploy !setenv
+Defaults:task-list-deploy secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+task-list-deploy ALL=(root) NOPASSWD: /opt/task-list/release-tool/scripts/deploy.sh --image ghcr.io/mbeka02/task-list-submission-automation@sha256\:*

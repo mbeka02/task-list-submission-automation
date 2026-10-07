@@ -1,0 +1,45 @@
+# Host preview release: no sending or publishing. Settings contain no secrets.
+services:
+  worker:
+    image: ${TASK_LIST_IMAGE:?Deployment helper supplies a verified image ID}
+    pull_policy: never
+    init: true
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 5m
+    pids_limit: 64
+    mem_limit: 512m
+    env_file:
+      - path: ${TASK_LIST_DEPLOY_ROOT:?}/worker.env
+        format: raw
+    environment:
+      APP_MODE: preview
+      ENABLE_OUTBOUND: "false"
+      ENABLE_DAILY_BRIEF: "false"
+      BUSINESS_TIMEZONE: Africa/Nairobi
+      SQLITE_FILE_PATH: /data/task-list.sqlite
+      LARK_USER_CREDENTIAL_FILE: /credentials/user-oauth.json
+      HOLIDAY_CALENDAR_PATH: /settings/calendar.json
+      LARK_APP_SECRET: ${LARK_APP_SECRET:?Doppler must supply the app secret}
+    volumes:
+      - type: bind
+        source: ${TASK_LIST_DEPLOY_ROOT}/ledger
+        target: /data
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${TASK_LIST_DEPLOY_ROOT}/credentials
+        target: /credentials
+        bind: { create_host_path: false }
+      - type: bind
+        source: ${TASK_LIST_DEPLOY_ROOT}/calendar.json
+        target: /settings/calendar.json
+        read_only: true
+        bind: { create_host_path: false }
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

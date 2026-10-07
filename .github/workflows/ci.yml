@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the requested commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.21.0
+
+      - name: Install the pinned package manager and dependencies
+        run: |
+          npm install --global pnpm@12.6.0
+          pnpm install --frozen-lockfile
+
+      - name: Check source and run the existing regression suite
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm build
+          pnpm test --maxWorkers=1
+
+      - name: Build the release image
+        run: docker build --tag task-list-ci:current .
+
+      - name: Exercise the packaged release offline
+        env:
+          RUN_DOCKER_ACCEPTANCE: "true"
+          RELEASE_TEST_IMAGE: task-list-ci:current
+        # Match the root host deploy helper; containers still run as UID 1000.
+        run: sudo env "PATH=$PATH" RUN_DOCKER_ACCEPTANCE=true RELEASE_TEST_IMAGE="$RELEASE_TEST_IMAGE" pnpm exec vitest run tests/acceptance --maxWorkers=1

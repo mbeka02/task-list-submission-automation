@@ -95,7 +95,9 @@ export const deliveries = sqliteTable(
     firstAttemptMs: integer(),
     nextAttemptMs: integer(),
     // Remember the sending adapter so a new adapter cannot grant old attempts UUID protection.
-    adapterKind: text({ enum: ["lark_app_api", "unverified"] }),
+    adapterKind: text({ enum: ["lark_app_api", "lark_webhook", "unverified"] }),
+    // Bind retries to a reviewed webhook endpoint without storing its secret URL.
+    transportBinding: text(),
     // The token fences stale workers; expiry means the outcome needs recovery, not that sending failed.
     claimToken: text(),
     claimExpiresMs: integer(),
@@ -176,6 +178,10 @@ export const dailyBriefs = sqliteTable(
     publicationLastError: text(),
     stagingFolderToken: text(),
     documentBaseUrl: text(),
+    // Freeze identity and access with creation intent so recovery cannot broaden sharing.
+    documentAuthStrategy: text({ enum: ["app", "user_oauth"] }),
+    documentOwnerOpenId: text(),
+    documentRecipientPermission: text({ enum: ["view", "edit"] }),
     announcementDeliveryId: text().references(() => deliveries.id),
     captureThroughMs: integer().notNull(),
     observedAtMs: integer().notNull(),

@@ -19,9 +19,10 @@ globalThis.setTimeout = (fn, ms, ...args) => {
 };
 let polls = 0;
 const server = createServer(async (req, res) => {
-  for await (const _ of req) {
-    /* Drain the synthetic wire request. */
-  }
+  let raw = "";
+  for await (const chunk of req) raw += chunk;
+  const refreshing =
+    raw.includes("refresh_token") && !raw.includes("device_code");
   appendFileSync(process.env.OAUTH_TEST_REQUESTS, `${req.method} ${req.url}\n`);
   let status = 200;
   let body;
@@ -34,6 +35,21 @@ const server = createServer(async (req, res) => {
         "https://accounts.larksuite.com/device?user_code=DEMO-1234",
       expires_in: 240,
       interval: 1,
+    };
+  else if (
+    req.url === "/oauth/v3/token" &&
+    refreshing &&
+    process.env.OAUTH_TEST_MODE === "refresh_disconnect"
+  ) {
+    req.socket.destroy();
+    return;
+  } else if (req.url === "/oauth/v3/token" && refreshing)
+    body = {
+      access_token: "renewed-access-canary",
+      refresh_token: "renewed-refresh-canary",
+      token_type: "Bearer",
+      expires_in: 7200,
+      refresh_token_expires_in: 604800,
     };
   else if (req.url === "/oauth/v3/token") {
     polls++;
@@ -58,6 +74,9 @@ const server = createServer(async (req, res) => {
         refresh_token_expires_in: 604800,
         scope: "offline_access im:message:readonly",
       };
+    if (body?.access_token && process.env.OAUTH_TEST_MODE === "doc_scopes")
+      body.scope =
+        "offline_access im:message:readonly docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only";
     if (body?.access_token && process.env.OAUTH_TEST_MODE === "missing_scope")
       body.scope = "offline_access";
     if (body?.access_token && process.env.OAUTH_TEST_MODE === "dpop")

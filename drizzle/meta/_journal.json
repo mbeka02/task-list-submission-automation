@@ -64,6 +64,20 @@
       "when": 1791209569360,
       "tag": "0008_daily_phantom_reporter",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791388813302,
+      "tag": "0009_famous_hellcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791397708875,
+      "tag": "0010_melted_vision",
+      "breakpoints": true
     }
   ]
 }

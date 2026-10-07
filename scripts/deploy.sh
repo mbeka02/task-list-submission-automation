@@ -23,10 +23,14 @@ fi
 image=$2
 export TASK_LIST_DEPLOY_ROOT=${TASK_LIST_DEPLOY_ROOT:-/opt/task-list}
 export TASK_LIST_COMPOSE_PROJECT=${TASK_LIST_COMPOSE_PROJECT:-task-list}
-if ! python3 -I "$(dirname "$0")/deploy-settings.py" 2>/dev/null; then
+# Candidate settings belong only to the separate administrator review command.
+unset TASK_LIST_SETTINGS_FILE
+if ! settings=$(python3 -I "$(dirname "$0")/deploy-settings.py" 2>/dev/null); then
   event error deployment_failed configuration
   exit 2
 fi
+read -r TASK_LIST_PROFILE secret_names <<< "$settings"
+export TASK_LIST_PROFILE
 exec 9>"$TASK_LIST_DEPLOY_ROOT/.deploy.lock"
 if ! flock --nonblock 9; then
   event warn deployment_failed deployment_busy
@@ -34,12 +38,14 @@ if ! flock --nonblock 9; then
 fi
 audit="$TASK_LIST_DEPLOY_ROOT/deployments.jsonl"
 event info deployment_started
-# Fetch only the app secret; the service token is never forwarded to the worker.
+# Clear inherited secrets; only the approved selection may reach the replacement worker.
+unset LARK_APP_SECRET GEMINI_API_KEY DEEPSEEK_API_KEY REPORT_WEBHOOK_URL REPORT_WEBHOOK_SIGNING_SECRET REMINDER_WEBHOOK_URL REMINDER_WEBHOOK_SIGNING_SECRET
+# The service token is never forwarded to the worker.
 export DOPPLER_TOKEN
 DOPPLER_TOKEN=$(<"$TASK_LIST_DEPLOY_ROOT/doppler.token")
 rm -f "$TASK_LIST_DEPLOY_ROOT/.deployment-failure"
 # Discard raw third-party diagnostics; the helper records only a finite phase name.
-if doppler run --silent --no-check-version --no-fallback --only-secrets LARK_APP_SECRET -- \
+if doppler run --silent --no-check-version --no-fallback --only-secrets "$secret_names" -- \
   bash "$(dirname "$0")/deploy-apply.sh" "$2" 2>/dev/null; then
   event info deployment_ready
   exit 0

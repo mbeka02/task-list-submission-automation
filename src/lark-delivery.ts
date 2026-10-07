@@ -56,7 +56,7 @@ function rejection(value: unknown): TransportOutcome | null {
       retryAfterMs: 30_000,
     };
   if (
-    [230002, 230006, 230018, 230027, 230034, 230035, 232009].includes(
+    [230002, 230006, 230013, 230018, 230027, 230034, 230035, 232009].includes(
       value.code,
     )
   )

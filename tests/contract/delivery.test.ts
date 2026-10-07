@@ -229,7 +229,7 @@ test.each([
   },
 );
 
-test.each([230002, 230006, 230018, 230027, 230034, 230035, 232009])(
+test.each([230002, 230006, 230013, 230018, 230027, 230034, 230035, 232009])(
   "a documented destination/bot rejection %s is terminal and visible",
   async (code) => {
     const server = await larkHttpServer((request) =>

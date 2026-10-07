@@ -92,6 +92,8 @@ export function fileUserAccessToken(options: {
   readerOpenId: string;
   client: Client;
   clock: () => number;
+  /** Operator-requested renewal uses the same durable claim and real-time expiry arithmetic. */
+  forceRefresh?: boolean;
 }): () => Promise<UserAccessGrant> {
   return async () => {
     const directory = lstatSync(dirname(options.credentialFile));
@@ -155,7 +157,8 @@ export function fileUserAccessToken(options: {
       if (saved.state !== "ready")
         throw new CredentialError("credentials_require_reauthorization");
       const startedAtMs = options.clock();
-      if (saved.expiresAtMs > startedAtMs + 30_000) return saved;
+      if (!options.forceRefresh && saved.expiresAtMs > startedAtMs + 30_000)
+        return saved;
       if (saved.refreshExpiresAtMs <= startedAtMs)
         throw new CredentialError("credentials_refresh_expired");
       // Commit intent before a rotating refresh key can be consumed by the provider.

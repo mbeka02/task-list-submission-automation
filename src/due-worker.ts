@@ -49,6 +49,8 @@ export interface DueWorkerOptions extends ObservabilityOptions {
   reminderText: string;
   reader: HistoryReaderOptions;
   transport?: DeliveryTransport;
+  /** Source-group reminders may use a separately reviewed bot/endpoint. */
+  reminderTransport?: DeliveryTransport;
   clock?: () => number;
   restoreMode?: boolean;
   /** Inspect an existing migrated ledger only; runDueWork is disabled on this instance. */
@@ -179,6 +181,9 @@ export function createDueWorker(input: DueWorkerOptions) {
   const reminderLedger = openReportLedger({
     ...options,
     destinationChatId: options.sourceChatId,
+    ...(options.reminderTransport
+      ? { transport: options.reminderTransport }
+      : {}),
   });
   const reportLedger = openReportLedger(options);
   const reader = createSubmissionHistoryReader({

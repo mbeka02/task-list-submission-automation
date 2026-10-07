@@ -13,7 +13,7 @@ try {
   if (outbound !== "true" && outbound !== "false") {
     throw new Error("ENABLE_OUTBOUND must be true or false");
   }
-  if (outbound === "true") {
+  if (outbound === "true" && mode !== "production") {
     throw new Error(
       mode === "preview"
         ? "ENABLE_OUTBOUND must be false in preview mode"
@@ -33,7 +33,7 @@ try {
   console.log(
     JSON.stringify({
       mode,
-      outboundEnabled: false,
+      outboundEnabled: outbound === "true",
       businessTimezone: "Africa/Nairobi",
       checks: { sqlite: "ok", larkSdk: "ok" },
     }),

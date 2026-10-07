@@ -314,3 +314,52 @@ test("login refuses group-message access without the permission required by the 
     f.close();
   }
 });
+
+test("operator explicitly renews a ready grant and preserves private credentials without exposing tokens", () => {
+  const f = fixture();
+  try {
+    expect(f.command("start").status).toBe(0);
+    expect(f.command("finish").status).toBe(0);
+    const result = f.command("refresh");
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ready",
+      readerOpenId: "ou_reader",
+    });
+    const saved = JSON.parse(readFileSync(f.credentialFile, "utf8"));
+    expect(saved).toMatchObject({
+      state: "ready",
+      accessToken: "renewed-access-canary",
+      refreshToken: "renewed-refresh-canary",
+    });
+    expect(statSync(f.credentialFile).mode & 0o777).toBe(0o600);
+    expect(result.stdout + result.stderr).not.toContain("canary");
+    expect(existsSync(`${f.credentialFile}.lock`)).toBe(false);
+  } finally {
+    f.close();
+  }
+});
+
+test("uncertain explicit renewal blocks a second refresh instead of replaying a rotating key", () => {
+  const f = fixture();
+  try {
+    expect(f.command("start").status).toBe(0);
+    expect(f.command("finish").status).toBe(0);
+    const failed = f.command("refresh", {
+      OAUTH_TEST_MODE: "refresh_disconnect",
+    });
+    expect(JSON.parse(failed.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "credentials_refresh_uncertain",
+    });
+    const before = readFileSync(f.requests, "utf8");
+    expect(JSON.parse(f.command("refresh").stdout)).toMatchObject({
+      status: "blocked",
+      reason: "credentials_require_reauthorization",
+    });
+    expect(readFileSync(f.requests, "utf8")).toBe(before);
+    expect(failed.stdout + failed.stderr).not.toContain("canary");
+  } finally {
+    f.close();
+  }
+});

@@ -6,6 +6,7 @@ import { type DestinationStream, type Logger, pino } from "pino";
 export type EntryPoint =
   | "worker_auth_start"
   | "worker_auth_finish"
+  | "worker_auth_refresh"
   | "worker_once"
   | "worker_startup"
   | "worker_periodic"
@@ -47,6 +48,8 @@ const reasons = new Set([
   "credentials_invalid",
   "destination_denied",
   "outbound_scope_mismatch",
+  "invalid_webhook_configuration",
+  "transport_binding_changed",
   "delivery_window_expired",
   "claim_expired",
   "claim_lost",
@@ -57,6 +60,7 @@ const reasons = new Set([
   "transport_or_acknowledgement_unknown",
   "frozen_evidence_unavailable",
   "invalid_delivery_time",
+  "message_too_large",
   "restore_review_required",
   "invalid_calendar",
   "invalid_clock",
@@ -204,6 +208,9 @@ const categories = new Set([
   "write",
   "verify",
   "share",
+  "lark_webhook",
+  "lark_app_api",
+  "unverified",
 ]);
 const numericFields = new Set([
   "durationMs",
@@ -236,6 +243,7 @@ const categoryFields = new Set([
   "publicationState",
   "mode",
   "stage",
+  "adapterKind",
 ]);
 
 /** Diagnostics can inspect ledger metadata only while an operational sink is attached. */

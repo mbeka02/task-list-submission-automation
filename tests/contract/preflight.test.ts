@@ -87,7 +87,7 @@ test("preflight rejects an ambiguous outbound setting", () => {
   expect(result.stderr).toContain("ENABLE_OUTBOUND must be true or false");
 });
 
-test("preflight keeps outbound activation disabled after local implementation", () => {
+test("preflight checks explicit production activation locally without requiring credentials", () => {
   const result = spawnSync(process.execPath, ["--import", "tsx", entrypoint], {
     cwd: fileURLToPath(new URL("../..", import.meta.url)),
     env: {
@@ -98,6 +98,11 @@ test("preflight keeps outbound activation disabled after local implementation", 
     encoding: "utf8",
   });
 
-  expect(result.status).toBe(1);
-  expect(result.stderr).toContain("Outbound activation is disabled");
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout)).toMatchObject({
+    mode: "production",
+    outboundEnabled: true,
+    checks: { sqlite: "ok", larkSdk: "ok" },
+  });
+  expect(result.stderr).toBe("");
 });

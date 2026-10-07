@@ -69,6 +69,7 @@ export interface OutboundReport {
 /** Acknowledged success, proven non-acceptance, or an expired safety deadline; thrown errors are uncertain. */
 export type TransportOutcome =
   | { messageId: string }
+  | { webhookAccepted: true }
   | {
       status: "retryable";
       reason: "rate_limited" | "credentials_unavailable";
@@ -84,6 +85,8 @@ export type TransportOutcome =
         | "destination_denied"
         | "outbound_scope_mismatch"
         | "credentials_invalid"
+        | "invalid_delivery_time"
+        | "message_too_large"
         | "delivery_window_expired";
     };
 
@@ -92,6 +95,9 @@ export type DeliveryTransport = ((
   request: OutboundReport,
 ) => Promise<TransportOutcome>) & {
   deduplication?: "lark_uuid_one_hour";
+  kind?: "lark_webhook";
+  /** Non-secret endpoint fingerprint, never the webhook URL or signing key. */
+  binding?: string;
 };
 
 /** SQLite and fixed app/group scope; without a transport, ledger operations cannot contact Lark. */
@@ -111,7 +117,8 @@ export interface LedgerOptions extends ObservabilityOptions {
 
 /**
  * Reviewed outcome with operator evidence; the attempt number fences stale decisions.
- * Sent requires the observed Lark message ID; not-sent only makes a later attempt eligible.
+ * App-API sent decisions require an observed message ID; webhooks allow evidenced receipt review without one.
+ * Not-sent only makes a later attempt eligible, preserving the original endpoint binding.
  */
 export interface ReconcileDeliveryInput {
   deliveryId: string;
@@ -172,10 +179,14 @@ export function openReportLedger(input: LedgerOptions) {
         ),
       )
       .get();
-    const recipient = row ? recipientFromKey(row.destinationChatId) : null;
+    if (!row) return null;
+    const recipient = recipientFromKey(row.destinationChatId);
+    // Preserve the older public shape for deliveries that predate endpoint binding.
+    const { transportBinding, ...record } = row;
     return row
       ? {
-          ...row,
+          ...record,
+          ...(transportBinding === null ? {} : { transportBinding }),
           ...(recipient?.type === "open_id" ? { recipient } : {}),
           entries: db
             .select()
@@ -684,6 +695,7 @@ export function openReportLedger(input: LedgerOptions) {
             businessDate: delivery?.businessDate,
             kind: delivery?.kind,
             attemptCount: delivery?.attemptCount,
+            adapterKind: delivery?.adapterKind,
             reason: "reason" in result ? result.reason : delivery?.lastError,
             durationMs: Math.round(performance.now() - started),
           },
@@ -759,6 +771,16 @@ export function openReportLedger(input: LedgerOptions) {
         input.now >= input.deliveryDeadlineMs)
     )
       return { status: "not_sent" as const, reason: "delivery_window_expired" };
+    if (
+      delivery.attemptCount > 0 &&
+      delivery.adapterKind === "lark_webhook" &&
+      (options.transport.kind !== "lark_webhook" ||
+        delivery.transportBinding !== options.transport.binding)
+    )
+      return {
+        status: "not_sent" as const,
+        reason: "transport_binding_changed",
+      };
     // Both the current transport and the original attempt must support the same UUID contract.
     if (
       delivery.state === "uncertain" &&
@@ -788,9 +810,15 @@ export function openReportLedger(input: LedgerOptions) {
       .set({
         state: "sending",
         adapterKind:
-          options.transport.deduplication === "lark_uuid_one_hour"
-            ? "lark_app_api"
-            : "unverified",
+          options.transport.kind === "lark_webhook"
+            ? "lark_webhook"
+            : options.transport.deduplication === "lark_uuid_one_hour"
+              ? "lark_app_api"
+              : "unverified",
+        transportBinding:
+          options.transport.kind === "lark_webhook"
+            ? (options.transport.binding ?? null)
+            : null,
         claimToken,
         claimExpiresMs: input.now + CLAIM_LEASE_MS,
         attemptCount: sql`${deliveries.attemptCount} + 1`,
@@ -877,7 +905,14 @@ export function openReportLedger(input: LedgerOptions) {
           .get();
         return saved ? { status: state } : { status: "uncertain" as const };
       }
-      if (!("messageId" in ack) || !ack.messageId?.trim())
+      if (
+        !("messageId" in ack && ack.messageId?.trim()) &&
+        !(
+          "webhookAccepted" in ack &&
+          ack.webhookAccepted === true &&
+          claimed.adapterKind === "lark_webhook"
+        )
+      )
         throw new Error("Missing acknowledgement");
       // The claim token fences completions from a worker superseded by recovery/review.
       const saved = db
@@ -886,7 +921,7 @@ export function openReportLedger(input: LedgerOptions) {
           state: "sent",
           nextAttemptMs: null,
           lastError: null,
-          messageId: ack.messageId,
+          messageId: "messageId" in ack ? ack.messageId : null,
           acknowledgedMs: (options.clock ?? Date.now)(),
           claimToken: null,
           claimExpiresMs: null,
@@ -934,7 +969,8 @@ export function openReportLedger(input: LedgerOptions) {
     if (
       (input.decision !== "sent" && input.decision !== "not-sent") ||
       (input.decision === "sent"
-        ? !/^om_[A-Za-z0-9_-]+$/.test(input.messageId ?? "")
+        ? input.messageId !== undefined &&
+          !/^om_[A-Za-z0-9_-]+$/.test(input.messageId)
         : input.messageId !== undefined) ||
       !input.operator.trim() ||
       input.operator.length > 200 ||
@@ -951,6 +987,17 @@ export function openReportLedger(input: LedgerOptions) {
       return db.transaction(
         (tx) => {
           const delivery = getDelivery(input.deliveryId);
+          // Webhook receipts contain no message ID. Reviewed group evidence can resolve them.
+          if (
+            delivery &&
+            input.decision === "sent" &&
+            delivery.adapterKind !== "lark_webhook" &&
+            input.messageId === undefined
+          )
+            return {
+              status: "blocked" as const,
+              reason: "invalid_reconciliation",
+            };
           if (
             !delivery ||
             !(

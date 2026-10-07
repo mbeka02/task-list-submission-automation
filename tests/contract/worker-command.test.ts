@@ -44,6 +44,8 @@ function command(
       "tsx",
       "--import",
       "./tests/support/worker-clock.ts",
+      "--import",
+      "./tests/support/worker-runtime-http.mjs",
       "src/worker-command.ts",
       ...args,
     ],
@@ -362,6 +364,277 @@ test("worker status accepts an explicit admin recipient without a group destinat
       status: "ok",
       outboundEnabled: false,
     });
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
+test("an explicitly configured production worker sends the due reminder and persists its acknowledgement", () => {
+  const environment = fixture();
+  try {
+    const result = command(environment, ["run", "--once"], {
+      APP_MODE: "production",
+      ENABLE_OUTBOUND: "true",
+      MANAGEMENT_CHAT_ID: undefined,
+      REPORT_RECIPIENT_TYPE: "open_id",
+      REPORT_RECIPIENT_ID: "ou_admin",
+      WORKER_TEST_NOW: "2026-10-02T06:30:00.000Z",
+      LARK_APP_SECRET: "production-secret-canary",
+      LARK_READER_OPEN_ID: "ou_operator",
+      LARK_USER_CREDENTIAL_FILE: join(environment.directory, "oauth.json"),
+      WORKER_TEST_HTTP: "true",
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      outboundEnabled: true,
+      reminder: { state: "sent", messageId: "om_reminder", attemptCount: 1 },
+      report: { state: "not_due" },
+    });
+    const ledger = openReportLedger({
+      databasePath: environment.databasePath,
+      appId: "cli_test",
+      sourceChatId: "oc_source",
+      destinationChatId: "oc_source",
+    });
+    try {
+      const id = JSON.parse(result.stdout).reminder.deliveryId;
+      expect(ledger.getDelivery(id)).toMatchObject({
+        state: "sent",
+        messageId: "om_reminder",
+      });
+    } finally {
+      ledger.close();
+    }
+    expect(result.stdout + result.stderr).not.toContain(
+      "production-secret-canary",
+    );
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
+test("production sends source reminders through a separately bound signed webhook", () => {
+  const environment = fixture();
+  try {
+    const result = command(environment, ["run", "--once"], {
+      APP_MODE: "production",
+      ENABLE_OUTBOUND: "true",
+      MANAGEMENT_CHAT_ID: undefined,
+      REPORT_RECIPIENT_TYPE: "chat_id",
+      REPORT_RECIPIENT_ID: "oc_private_reports",
+      REPORT_TRANSPORT: "webhook",
+      REMINDER_TRANSPORT: "webhook",
+      REPORT_WEBHOOK_URL:
+        "https://open.larksuite.com/open-apis/bot/v2/hook/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+      REPORT_WEBHOOK_SIGNING_SECRET: "report-secret-canary",
+      REMINDER_WEBHOOK_URL:
+        "https://open.larksuite.com/open-apis/bot/v2/hook/bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb",
+      REMINDER_WEBHOOK_SIGNING_SECRET: "reminder-secret-canary",
+      WORKER_TEST_NOW: "2026-10-02T06:30:00Z",
+      WORKER_TEST_HTTP: "true",
+      LARK_APP_SECRET: "synthetic-app-secret",
+      LARK_READER_OPEN_ID: "ou_operator",
+      LARK_USER_CREDENTIAL_FILE: join(environment.directory, "oauth.json"),
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      reminder: { state: "sent", messageId: null, attemptCount: 1 },
+      report: { state: "not_due" },
+    });
+    const ledger = openReportLedger({
+      databasePath: environment.databasePath,
+      appId: "cli_test",
+      sourceChatId: "oc_source",
+      destinationChatId: "oc_source",
+    });
+    try {
+      expect(ledger.getDailyDelivery("2026-10-02", "reminder")).toMatchObject({
+        adapterKind: "lark_webhook",
+        messageId: null,
+      });
+    } finally {
+      ledger.close();
+    }
+    for (const secret of [
+      "report-secret-canary",
+      "reminder-secret-canary",
+      "/hook/",
+    ])
+      expect(result.stdout + result.stderr).not.toContain(secret);
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
+test.each(["app_bot", "webhook"])(
+  "production publishes a verified editable brief and names report using %s",
+  (transport) => {
+    const environment = fixture();
+    const credentialFile = join(environment.directory, "oauth.json");
+    writeFileSync(
+      credentialFile,
+      JSON.stringify({
+        version: 1,
+        state: "ready",
+        appId: "cli_test",
+        readerOpenId: "ou_operator",
+        accessToken: "synthetic-reader",
+        refreshToken: "synthetic-refresh",
+        expiresAtMs: 1791100000000,
+        refreshExpiresAtMs: 1792000000000,
+      }),
+      { mode: 0o600 },
+    );
+    try {
+      const result = command(environment, ["run", "--once"], {
+        APP_MODE: "production",
+        ENABLE_OUTBOUND: "true",
+        MANAGEMENT_CHAT_ID: undefined,
+        REPORT_RECIPIENT_TYPE: transport === "webhook" ? "chat_id" : "open_id",
+        REPORT_RECIPIENT_ID:
+          transport === "webhook" ? "oc_private_reports" : "ou_admin",
+        REPORT_TRANSPORT: transport,
+        REPORT_WEBHOOK_URL:
+          "https://open.larksuite.com/open-apis/bot/v2/hook/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+        REPORT_WEBHOOK_SIGNING_SECRET: "report-key-canary",
+        WORKER_TEST_NOW: "2026-10-02T07:15:01Z",
+        WORKER_TEST_HTTP: "true",
+        LARK_APP_SECRET: "synthetic-secret",
+        LARK_READER_OPEN_ID: "ou_operator",
+        LARK_USER_CREDENTIAL_FILE: credentialFile,
+        ENABLE_DAILY_BRIEF: "true",
+        BRIEF_MODE: "publish",
+        BRIEF_ACTIVATION_DATE: "2026-10-02",
+        BRIEF_PROVIDER: "gemini",
+        GEMINI_API_KEY: "model-key-canary",
+        GEMINI_MODEL: "gemini-3.5-flash-lite",
+        BRIEF_TEMPLATE_VERSION: "template-v1",
+        BRIEF_PROMPT_VERSION: "prompt-v1",
+        BRIEF_SCHEMA_VERSION: "schema-v1",
+        LARK_DOC_STAGING_FOLDER_TOKEN: "folderSynthetic",
+        LARK_DOCUMENT_BASE_URL: "https://example.larksuite.com/docx/",
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        outboundEnabled: true,
+        report: {
+          state: "sent",
+          ...(transport === "webhook" ? { messageId: null } : {}),
+        },
+        brief: {
+          state: "published",
+          announcement: {
+            state: "sent",
+            ...(transport === "webhook" ? { messageId: null } : {}),
+          },
+          documentUrl: "https://example.larksuite.com/docx/docRelease",
+        },
+      });
+      expect(result.stdout + result.stderr).not.toContain("model-key-canary");
+    } finally {
+      rmSync(environment.directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test("production publishing status is read-only and does not require model or app secrets", () => {
+  const environment = fixture();
+  try {
+    const before = readFileSync(environment.databasePath);
+    const result = command(environment, ["status"], {
+      APP_MODE: "production",
+      ENABLE_OUTBOUND: "true",
+      MANAGEMENT_CHAT_ID: undefined,
+      REPORT_RECIPIENT_TYPE: "open_id",
+      REPORT_RECIPIENT_ID: "ou_admin",
+      ENABLE_DAILY_BRIEF: "true",
+      BRIEF_MODE: "publish",
+      BRIEF_ACTIVATION_DATE: "2026-10-02",
+      BRIEF_PROVIDER: "gemini",
+      GEMINI_MODEL: "gemini-3.5-flash-lite",
+      BRIEF_TEMPLATE_VERSION: "template-v1",
+      BRIEF_PROMPT_VERSION: "prompt-v1",
+      BRIEF_SCHEMA_VERSION: "schema-v1",
+      LARK_DOC_STAGING_FOLDER_TOKEN: "folderSynthetic",
+      LARK_DOCUMENT_BASE_URL: "https://example.larksuite.com/docx/",
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ok",
+      outboundEnabled: true,
+    });
+    expect(readFileSync(environment.databasePath)).toEqual(before);
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
+test("a production publishing run rejects unsupported models before any source or outbound work", () => {
+  const environment = fixture();
+  try {
+    const result = command(environment, ["run", "--once"], {
+      APP_MODE: "production",
+      ENABLE_OUTBOUND: "true",
+      MANAGEMENT_CHAT_ID: undefined,
+      REPORT_RECIPIENT_TYPE: "open_id",
+      REPORT_RECIPIENT_ID: "ou_admin",
+      WORKER_TEST_HTTP: "true",
+      LARK_APP_SECRET: "secret-canary",
+      LARK_READER_OPEN_ID: "ou_operator",
+      LARK_USER_CREDENTIAL_FILE: join(environment.directory, "oauth.json"),
+      ENABLE_DAILY_BRIEF: "true",
+      BRIEF_MODE: "publish",
+      BRIEF_ACTIVATION_DATE: "2026-10-02",
+      BRIEF_PROVIDER: "gemini",
+      GEMINI_MODEL: "invalid-model-secret-canary",
+      GEMINI_API_KEY: "key-canary",
+      BRIEF_TEMPLATE_VERSION: "template-v1",
+      BRIEF_PROMPT_VERSION: "prompt-v1",
+      BRIEF_SCHEMA_VERSION: "schema-v1",
+      LARK_DOC_STAGING_FOLDER_TOKEN: "folderSynthetic",
+      LARK_DOCUMENT_BASE_URL: "https://example.larksuite.com/docx/",
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "invalid_worker_configuration",
+      outboundEnabled: false,
+    });
+    expect(result.stdout + result.stderr).not.toContain("canary");
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
+test("one webhook cannot be configured for two distinct group destinations", () => {
+  const environment = fixture();
+  try {
+    const url =
+      "https://open.larksuite.com/open-apis/bot/v2/hook/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    const result = command(environment, ["run", "--once"], {
+      APP_MODE: "production",
+      ENABLE_OUTBOUND: "true",
+      MANAGEMENT_CHAT_ID: undefined,
+      REPORT_RECIPIENT_TYPE: "chat_id",
+      REPORT_RECIPIENT_ID: "oc_private_reports",
+      REPORT_TRANSPORT: "webhook",
+      REMINDER_TRANSPORT: "webhook",
+      REPORT_WEBHOOK_URL: url,
+      REMINDER_WEBHOOK_URL: url,
+      REPORT_WEBHOOK_SIGNING_SECRET: "signing-canary",
+      REMINDER_WEBHOOK_SIGNING_SECRET: "signing-canary",
+      WORKER_TEST_NOW: "2026-10-02T06:30:00Z",
+      WORKER_TEST_HTTP: "true",
+      LARK_APP_SECRET: "synthetic-app-secret",
+      LARK_READER_OPEN_ID: "ou_operator",
+      LARK_USER_CREDENTIAL_FILE: join(environment.directory, "oauth.json"),
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "invalid_webhook_configuration",
+      outboundEnabled: false,
+    });
+    expect(result.stdout + result.stderr).not.toContain("signing-canary");
+    expect(result.stdout + result.stderr).not.toContain(url);
   } finally {
     rmSync(environment.directory, { recursive: true, force: true });
   }

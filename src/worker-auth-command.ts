@@ -13,11 +13,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { Client, Domain, LoggerLevel } from "@larksuiteoapi/node-sdk";
 import {
   createOperationalLogger,
   operationalEvent,
   withObservedRun,
 } from "./observability.js";
+import {
+  CredentialError,
+  fileUserAccessToken,
+} from "./user-oauth-credentials.js";
 
 /** Failures carry operator-safe categories; provider bodies and credential values never escape. */
 class LoginError extends Error {}
@@ -283,13 +288,51 @@ async function finish(
 async function main() {
   if (
     process.argv.length !== 3 ||
-    !["start", "finish"].includes(process.argv[2] ?? "")
+    !["start", "finish", "refresh"].includes(process.argv[2] ?? "")
   )
     throw new LoginError("invalid_arguments");
   const appId = required("LARK_APP_ID");
   const appSecret = required("LARK_APP_SECRET");
   const readerOpenId = required("LARK_READER_OPEN_ID");
   const file = required("LARK_USER_CREDENTIAL_FILE");
+  if (process.argv[2] === "refresh") {
+    const started = Date.now();
+    const silent = () => {};
+    const client = new Client({
+      appId,
+      appSecret,
+      domain: Domain.Lark,
+      disableTokenCache: true,
+      loggerLevel: LoggerLevel.error,
+      logger: {
+        error: silent,
+        warn: silent,
+        info: silent,
+        debug: silent,
+        trace: silent,
+      },
+    });
+    try {
+      await fileUserAccessToken({
+        credentialFile: file,
+        appId,
+        readerOpenId,
+        client,
+        clock: Date.now,
+        forceRefresh: true,
+      })();
+    } catch (error) {
+      throw new LoginError(
+        error instanceof CredentialError ? error.reason : "credentials_invalid",
+      );
+    }
+    operationalEvent("info", "worker_credentials_refreshed", {
+      status: "ready",
+      durationMs: Date.now() - started,
+    });
+    console.log(JSON.stringify({ status: "ready", readerOpenId }));
+    return;
+  }
   const scopes = [
     ...new Set([
       ...required("LARK_OAUTH_SCOPES").split(/\s+/),
@@ -406,7 +449,11 @@ try {
   });
   await withObservedRun(
     { logger },
-    process.argv[2] === "finish" ? "worker_auth_finish" : "worker_auth_start",
+    process.argv[2] === "refresh"
+      ? "worker_auth_refresh"
+      : process.argv[2] === "finish"
+        ? "worker_auth_finish"
+        : "worker_auth_start",
     async () => {
       try {
         await main();

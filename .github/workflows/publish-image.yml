@@ -1,0 +1,70 @@
+name: Publish tested image
+
+# Publishing is a reviewed, manual operation from main; this does not deploy a server.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-task-list-image
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the selected main commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Node runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.21.0
+
+      - name: Install dependencies and verify the source
+        run: |
+          npm install --global pnpm@12.6.0
+          pnpm install --frozen-lockfile
+          pnpm lint
+          pnpm typecheck
+          pnpm build
+          pnpm test --maxWorkers=1
+
+      - name: Name and build the exact image to publish
+        shell: bash
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          printf 'RELEASE_IMAGE=%s:sha-%s\n' "$image" "$GITHUB_SHA" >> "$GITHUB_ENV"
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --tag "$image:sha-$GITHUB_SHA" .
+
+      - name: Verify the same image before publishing
+        env:
+          RUN_DOCKER_ACCEPTANCE: "true"
+          RELEASE_TEST_IMAGE: ${{ env.RELEASE_IMAGE }}
+        run: sudo env "PATH=$PATH" RUN_DOCKER_ACCEPTANCE=true RELEASE_TEST_IMAGE="$RELEASE_TEST_IMAGE" pnpm exec vitest run tests/acceptance --maxWorkers=1
+
+      - name: Publish and record the immutable deployment reference
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$RELEASE_IMAGE"
+          reference=$(docker image inspect "$RELEASE_IMAGE" --format '{{index .RepoDigests 0}}')
+          printf '### Tested release\n\nCommit: `%s`\n\nImage: `%s`\n' "$GITHUB_SHA" "$reference" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove registry login from the disposable runner
+        if: always()
+        run: docker logout ghcr.io

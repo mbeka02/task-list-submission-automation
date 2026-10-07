@@ -397,6 +397,8 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 
 No approved annual holiday dataset or initial worker OAuth login command is bundled. The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
 
+For server deployment, follow the [step-by-step checklist](DEPLOYMENT_CHECKLIST.md) and [preview host setup](deploy/README.md). GitHub Actions verifies and publishes a tested image; a separately approved manual deployment connects through Tailscale and preserves host-mounted SQLite and OAuth credentials. Preview sending and brief publication remain disabled.
+
 For Docker builds, acceptance, volume preparation and startup, follow the [runbook](RUNBOOK.md#build-and-exercise-the-local-image). The supplied Compose package is offline, publishes no ports and forces sending off. A due report that needs Lark remains blocked offline.
 
 ## Usage and operations

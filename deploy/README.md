@@ -79,7 +79,7 @@ In Tailscale's **Trust credentials → Credential → OpenID Connect**, create a
 
 For the **Scopes** section, select only **Auth Keys → Write** (`auth_keys`, which includes its read operations), with **`tag:task-list-ci`** as the allowed tag. Clear all other read/write scopes, including All, Devices, DNS, Access controls/policy, Users and trust-credential management. This lets the action create the ephemeral runner's login key. It does not need permission to administer the tailnet. If editing is unavailable, create a replacement OIDC credential with these settings and revoke the unused broad credential. Keep the subject/custom claims below when replacing it. [Required action scope](https://github.com/tailscale/github-action#workload-identity-federation), [scope definitions](https://tailscale.com/docs/reference/trust-credentials)
 
-API scopes and network grants are separate: `auth_keys` allows runner enrollment; the grant below determines which server/port that enrolled runner can reach. Client ID, Audience and the verified target have been saved in GitHub's `preview` environment; the administrator reports configuring the scope and access rules. The server tag and laptop SSH are verified; effective CI restrictions and OIDC claims still await the first runner check.
+API scopes and network grants are separate: `auth_keys` allows runner enrollment; the grant below determines which server/port that enrolled runner can reach. Client ID, Audience and the verified target have been saved in GitHub's `preview` environment. The server tag, laptop SSH and hosted CI enrollment/restricted SSH check are verified. Negative tests of other OIDC claims, unrelated devices and service ports remain outstanding.
 
 Use the verified immutable subject:
 
@@ -123,6 +123,19 @@ ssh -i <dedicated-key> -o StrictHostKeyChecking=yes \
 
 This check proves the restricted SSH entry point, not application readiness. Attempt an arbitrary command and forwarding separately and confirm denial before the first deploy.
 
+### Troubleshoot runner enrollment
+
+Distinguish the failing step before changing credentials or access rules:
+
+| Failure | What it establishes | Next check |
+| --- | --- | --- |
+| JWT exchange fails | The runner has not obtained a Tailscale API token | Client ID, audience, issuer and subject/custom claims |
+| `unexpected error while creating authkey` | Exchange returned a nonempty token, but temporary runner-key creation failed | Credential's **Auth Keys → Write** scope and allowed `tag:task-list-ci`; then Tailscale API behavior |
+| Enrollment succeeds, SSH times out | The runner joined; the host connection is still unverified | Target, effective network grants and host firewall |
+| SSH authentication or forced command fails | The connection reached SSH | Verified host key, dedicated key/account and effective SSH/sudo policy |
+
+The reviewed check-only run initially failed at auth-key creation with HTTP 404; enabling the missing Auth Keys write permission changed it to HTTP 400 for an unpermitted CI tag. Correcting the credential's allowed tag made enrollment and SSH pass. A 404 alone does not establish which setting is wrong. The [pinned client implementation](https://github.com/tailscale/tailscale/blob/v1.94.2/feature/identityfederation/identityfederation.go) performs exchange first and emits this error only from `CreateKey`. The current 1.102.3 implementation uses the same sequence, so a version change was not an established fix. The action's [tag troubleshooting](https://github.com/tailscale/github-action#requested-tags-tagmytag-are-invalid-or-not-permitted) requires matching the credential's permitted tags. Do not broaden all API permissions or network grants to diagnose enrollment. Inspect only safe metadata; never print the GitHub JWT, returned API token or generated auth key.
+
 ## Release sequence
 
 1. Merge the reviewed branch; observe hosted **CI**.
@@ -131,6 +144,8 @@ This check proves the restricted SSH entry point, not application readiness. Att
 4. Run **Deploy preview** with **operation = deploy** from main using only the digest from the successful publisher. Review the target/digest at the environment approval gate.
 5. Inspect local status and Pino logs on the server, then perform the separately approved reader/OAuth checks.
 
-The deploy workflow does not copy source, install privileged tooling or bootstrap access. It contacts the existing host helper through Tailscale; the server pulls the image over HTTPS. The host helper/account, private paths, Doppler token and GitHub SSH secrets are installed and verified. The reviewed calendar, worker OAuth grant, first hosted connectivity run and image deployment remain outstanding. Publishing remains disabled; no worker is running yet.
+The deploy workflow does not copy source, install privileged tooling or bootstrap access. It contacts the existing host helper through Tailscale; the server pulls the image over HTTPS. The host helper/account, private paths, Doppler token and GitHub SSH secrets are installed and verified. Merged-main CI, tested-image publication, anonymous host pull and runner enrollment/restricted SSH passed. The owner-reviewed preview deployment succeeded: one worker is running in restore mode with sending and briefs disabled. The temporary calendar is approved only for paused acceptance. Live calendar review and separate worker OAuth provisioning remain outstanding. See the [deployment checklist](../DEPLOYMENT_CHECKLIST.md#2-put-ci-and-image-publishing-in-place) for the verified release digest and run evidence.
+
+Host acceptance verified clean stop/restart, preserved SQLite integrity, non-root/read-only/no-port runtime settings, online backup and an isolated restore with its pause marker. These checks do not establish Lark access or live report delivery; local acceptance snapshots also do not replace an off-server backup policy.
 
 For a failed deployment, find its run ID and finite phase in the audit. Failures before `stop` leave the current worker alone; failures after `stop` need operator inspection. Preserve the ledger and rotating grant. Review schema compatibility before any image rollback, and use the [runbook](../RUNBOOK.md) for isolated paused restore/reconciliation. An interrupted SSH session is not evidence that deployment did or did not finish: inspect host state before retrying.

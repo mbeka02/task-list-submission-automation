@@ -21,7 +21,7 @@ The deployment helper runs as root. Docker runs the worker as **UID/GID 1000:100
 
 Install the reviewed `scripts/` and `deploy/` trees together under `release-tool`. Do not make the helper update itself from a branch during deployment. Updating this privileged tooling is an administrator operation, separate from replacing the application image.
 
-Host requirements: Bash, Python 3, util-linux `flock`, Docker, Compose supporting raw env files (2.30+), and the verified Doppler CLI. The inspected server has everything except Doppler. Python is used only for private input/metadata checks, not application runtime.
+Host requirements: Bash, Python 3, util-linux `flock`, Docker, Compose supporting raw env files (2.30+), and the verified Doppler CLI. Doppler CLI 3.76.6 has now been installed on the inspected server through the official signed APT repository. Python is used only for private input/metadata checks, not application runtime.
 
 Create the directories without touching existing Coolify/Nextcloud/n8n services:
 
@@ -35,7 +35,7 @@ Install the settings, calendar and scoped token with the ownership above. Provis
 
 ## Doppler workspace and configuration
 
-The repository is scoped to workspace **mbeka02**, project **task-list**, Preview config **`prv`**. The project and config exist; server credentials have not been installed. Put only `LARK_APP_SECRET` in `prv` for this preview package. The CLI confirms app `cli_aa366f7e9d78de2f`; its keychain-backed secret is masked, so provision it through the Doppler dashboard without copying it into chat or Git.
+The repository is scoped to workspace **mbeka02**, project **task-list**, Preview config **`prv`**. The project and config exist, and secret presence has been verified without displaying its value in `prv`, `dev`, `stg` and `prd`. Server service-token provisioning is still pending. This preview package fetches only `LARK_APP_SECRET`. The configured app is `cli_aa366f7e9d78de2f`; keep its secret in Doppler, outside chat and Git.
 
 Create a **read-only, `prv`-scoped service token** for the server and install it as `/opt/task-list/doppler.token` with the ownership above. Use explicit project/config selectors when administering secrets so another workspace's settings cannot be selected accidentally. The helper uses the service token scope and fetches only the app secret; it never injects the service token into the worker. Model credentials and production `prd` setup remain separate activation work. [Doppler service tokens](https://docs.doppler.com/docs/service-tokens)
 
@@ -76,6 +76,10 @@ Create a GitHub environment named **`preview`**, allow deployments from **main o
 | `DEPLOY_KNOWN_HOSTS` | Secret | Host key verified through the existing trusted LAN SSH connection, written for the Tailscale hostname |
 
 In Tailscale's **Trust credentials → Credential → OpenID Connect**, create a GitHub identity with Auth Keys write permission restricted to `tag:task-list-ci`. Copy Client ID and Audience into the environment variables. [Tailscale federation setup](https://tailscale.com/docs/features/workload-identity-federation)
+
+For the **Scopes** section, select only **Auth Keys → Write** (`auth_keys`, which includes its read operations), with **`tag:task-list-ci`** as the allowed tag. Clear all other read/write scopes, including All, Devices, DNS, Access controls/policy, Users and trust-credential management. This lets the action create the ephemeral runner's login key. It does not need permission to administer the tailnet. If editing is unavailable, create a replacement OIDC credential with these settings and revoke the unused broad credential. Keep the subject/custom claims below when replacing it. [Required action scope](https://github.com/tailscale/github-action#workload-identity-federation), [scope definitions](https://tailscale.com/docs/reference/trust-credentials)
+
+API scopes and network grants are separate: `auth_keys` allows runner enrollment; the grant below determines which server/port that enrolled runner can reach. Client ID, Audience and the verified target have been saved in GitHub's `preview` environment; credential scope, tags and claim restrictions still require dashboard verification before the first run.
 
 Use the verified immutable subject:
 

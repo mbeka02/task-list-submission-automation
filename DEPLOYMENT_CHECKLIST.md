@@ -53,7 +53,8 @@ If tailnet setup is delayed, use the same tested image with a manual LAN-side pu
 - [x] Draft `.github/workflows/ci.yml`: PR/main/manual source checks plus offline container acceptance, with read-only permissions and no real credentials.
 - [x] Draft `.github/workflows/publish-image.yml`: manual main-only verification, build, acceptance and publication of the same image to GHCR, followed by a digest in the run summary.
 - [x] Validate all three workflows with actionlint; verify official action pins and exercise their local release commands.
-- [ ] Merge after review and observe actual hosted runs.
+- [x] Observe the first hosted PR CI run: all verification passed.
+- [ ] Merge the deployment PR after review; image publishing/deployment remain unrun.
 - [ ] Require the CI check for merging main if repository administration settings permit.
 - [ ] Run the manual publisher on the reviewed main commit.
 - [ ] Choose package visibility. GHCR initially creates private packages; a public source repository does not automatically make its container anonymously pullable.
@@ -68,7 +69,8 @@ The workflows are initial infrastructure, not an activation mechanism. Ordinary 
 - [x] Confirm the user has tailnet admin access.
 - [ ] Select a tagged server identity and a distinct ephemeral CI tag; grant the CI identity access only to this server's deployment SSH port.
 - [ ] Configure Tailscale workload identity federation for this repository/environment, or a scoped OAuth client if federation is unavailable. Record the exact branch/workflow restrictions.
-- [ ] Configure the GitHub deployment environment, required review where supported, and deployment concurrency without cancellation of an active replacement.
+- [x] Configure GitHub `preview` with a required `mbeka02` review, a main-only branch rule and non-cancelling deployment concurrency. Save `DEPLOY_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE` as environment variables.
+- [ ] Narrow the supplied OIDC credential to Auth Keys Write and `tag:task-list-ci`; verify subject/custom claims and network grants before using it.
 - [ ] Provision a dedicated SSH deployment key/account or approved Tailscale SSH policy. Use pinned server host keys for ordinary SSH; no `StrictHostKeyChecking=no` and no administrator password in GitHub secrets.
 - [ ] Restrict the account to the reviewed deployment helper. Docker group membership is effectively host-root access; it is not a restricted deployment role.
 - [ ] Confirm UFW permits only the intended Tailscale path as needed, preserving LAN SSH and every existing service rule. Tailnet grants and host firewall rules are separate checks.
@@ -78,10 +80,10 @@ Keep Tailscale off the app container: it belongs on the host and ephemeral deplo
 
 ### 4. Prepare persistent storage and Doppler
 
-- [ ] Install/verify Doppler CLI on the server with the operator's approved package method.
-- [x] Authenticate in workspace **mbeka02**, create project **task-list**, and create Preview **`prv`**. This repository selects `task-list/prv`; default `prd` remains unused.
+- [x] Install Doppler CLI 3.76.6 on the server through the official signed APT repository and verify its version.
+- [x] Authenticate in workspace **mbeka02**, create project **task-list**, and create Preview **`prv`**. This repository selects `task-list/prv`; `prd` has a secret but no production deployment is active.
 - [ ] Create a read-only `prv` service token and install it privately on the server; provision production separately.
-- [ ] Add `LARK_APP_SECRET` to `task-list/prv` through the dashboard and verify its presence without displaying it. Preview does not need a model key; provision that separately for publication. Keep runtime settings in reviewed configuration and never forward the Doppler token into Docker.
+- [x] Verify `LARK_APP_SECRET` presence without displaying it in `task-list/prv` (also confirmed in dev/stg/prd). Preview does not need a model key; provision that separately for publication. Keep runtime settings in reviewed configuration and never forward the Doppler token into Docker.
 - [ ] Prepare private ledger, credential and backup directories, owned by the tested container UID/GID, plus the reviewed calendar file.
 - [ ] Provision the separate worker OAuth grant and verify initial access and renewal. Do not copy the interactive CLI refresh token or restore an old rotating token.
 - [x] Prepare the explicit server Compose definition: pinned image, bridge egress, no ports, read-only root, non-root user, bounded resources/logs and persistent mounts.

@@ -1,6 +1,6 @@
-# Preview deployment setup
+# Server deployment setup
 
-This is the repeatable host layout for `scripts/deploy.sh`. Sending and brief publication remain disabled. Follow the [deployment checklist](../DEPLOYMENT_CHECKLIST.md) in order; do not activate production by changing flags.
+This is the repeatable host layout for `scripts/deploy.sh`. The host is still a paused preview. The production profile can send after reviewed settings and live acceptance gates; follow the [deployment checklist](../DEPLOYMENT_CHECKLIST.md) in order.
 
 ## Host layout
 
@@ -11,7 +11,7 @@ The deployment helper runs as root. Docker runs the worker as **UID/GID 1000:100
 | `/opt/task-list` | root / 0700 | Private deployment root |
 | `release-tool/scripts`, `release-tool/deploy` | root; directories 0755, scripts 0755, other files 0644 | Reviewed helper and fixed Compose definition; never writable by the deploy account |
 | `worker.env` | root / 0600 | Non-secret settings; start from `worker.env.example` |
-| `doppler.token` | root / 0600 | Read-only service token scoped to the preview Doppler config |
+| `doppler.token` | root / 0600 | Read-only service token scoped to the selected config (`prv` or `prd`) |
 | `calendar.json` | 1000:1000 / 0600 | Reviewed Kenyan holiday calendar, mounted read-only |
 | `ledger`, `credentials`, `backups` | 1000:1000 / 0700 | Persistent SQLite, rotating worker OAuth grant and upgrade snapshots |
 | `credentials/user-oauth.json` | 1000:1000 / 0600 | Separately provisioned worker grant; never replace with an old CLI refresh token |
@@ -49,7 +49,7 @@ sudo /opt/task-list/release-tool/scripts/deploy.sh --image \
 ```
 
 1. Validate private paths and allowlisted settings; acquire the host lock.
-2. Fetch only `LARK_APP_SECRET` through Doppler with fallback disabled; pull and inspect the image.
+2. Select preview/production from root-owned `APP_MODE`; fetch only required app/model/webhook secrets through Doppler with fallback disabled; pull and inspect the image.
 3. Run built preflight and the built status command against disposable SQLite. The live ledger is untouched.
 4. For an existing worker, verify app/group/reader scope and ledger/credential mounts. Stop gracefully, require a clean exit, then back up with that predecessor's image and migration level.
 5. Replace one worker using the verified local image ID and the same persistent paths.
@@ -150,8 +150,30 @@ Host acceptance verified clean stop/restart, preserved SQLite integrity, non-roo
 
 For a failed deployment, find its run ID and finite phase in the audit. Failures before `stop` leave the current worker alone; failures after `stop` need operator inspection. Preserve the ledger and rotating grant. Review schema compatibility before any image rollback, and use the [runbook](../RUNBOOK.md) for isolated paused restore/reconciliation. An interrupted SSH session is not evidence that deployment did or did not finish: inspect host state before retrying.
 
-## Report recipient configuration
+## Production settings and private reports-group transition
 
-New preview settings use `REPORT_RECIPIENT_TYPE` and `REPORT_RECIPIENT_ID`. Keep `chat_id` and the approved development-test-group ID during deployment acceptance. Production will use `open_id` and the privately resolved admin ID after availability and Doc editor access are verified. Do not include the admin's name or actual ID in tracked files.
+The current one-tenant app cannot DM the external admin: a synthetic live message was rejected with code `230013`. Production now targets a private **Chat** group containing the operator and admin, with a signed custom bot. Use `REPORT_RECIPIENT_TYPE=chat_id`, the privately verified `REPORT_RECIPIENT_ID`, `REPORT_TRANSPORT=webhook` and `REMINDER_TRANSPORT=webhook`. Add a separate signed custom bot to the source group for reminders. Never publish real recipient identities or webhook URLs.
 
-Existing group-only host settings remain compatible. The helper accepts one complete new recipient or the legacy group setting, rejects conflicting settings, and compares recipient type/ID during upgrades. A destination change requires a separate stopped-worker scope review; an image upgrade cannot redirect frozen reports. No change here enables outbound or brief publishing.
+Static settings belong in root-owned `worker.env`; secrets belong in Doppler:
+
+| Selection | Required secrets |
+| --- | --- |
+| All runs | `LARK_APP_SECRET` (source OAuth renewal and Doc API) |
+| Report webhook | `REPORT_WEBHOOK_URL`, `REPORT_WEBHOOK_SIGNING_SECRET` |
+| Reminder webhook | `REMINDER_WEBHOOK_URL`, `REMINDER_WEBHOOK_SIGNING_SECRET` |
+| Brief publish + Gemini | `GEMINI_API_KEY` |
+| Brief publish + DeepSeek | `DEEPSEEK_API_KEY` |
+
+The helper clears inherited credentials and requests only that selection. A `prd`-scoped read-only service token must replace the preview token before production. Fetching happens at deployment; containers do not poll Doppler. Rotate a signing/model key and redeploy the same reviewed digest to load it. Force OAuth renewal against the canonical writable grant, not a copy of a rotating refresh token.
+
+Production settings require `APP_MODE=production`, `ENABLE_OUTBOUND=true`, explicit `WORKER_RESTORE_MODE=true|false`, and a typed recipient. Start with restore mode **true**. Optional publication additionally needs `ENABLE_DAILY_BRIEF=true`, `BRIEF_MODE=publish`, matching activation/provider/model/version settings, private `LARK_DOC_STAGING_FOLDER_TOKEN` and tenant `LARK_DOCUMENT_BASE_URL` ending in `/docx/`. Status needs no model/webhook secrets; run validates them before opening storage. No reverse proxy or application ports are needed.
+
+Existing group-only preview settings remain readable. A recipient change requires a stopped-worker scope review:
+
+1. Stop the paused predecessor cleanly, preserving its container and persistent paths.
+2. Prepare private `/opt/task-list/next-settings.env` with the new recipient and restore mode **true**; app/source/reader stay the same.
+3. Run `sudo /opt/task-list/release-tool/scripts/review-recipient.sh --settings /opt/task-list/next-settings.env`.
+4. The helper preserves prior settings, records the exact successor hash and predecessor ID, then atomically installs reviewed settings. It never edits SQLite or sends.
+5. Deploy the reviewed immutable image through CI. Verify paused status, canonical OAuth renewal, both signed endpoints and private Doc access before a reviewed unpause/redeployment.
+
+Frozen jobs keep their original destination. An attempted webhook delivery cannot switch endpoints; signing-key rotation at the same URL preserves its binding. An unknown receipt requires an evidenced operator decision, not a fresh UUID. Acceptance has no message ID and does not prove the recipient read it. Doc access is a separate API check; if group ACL verification fails, keep publication blocked and link sharing closed.

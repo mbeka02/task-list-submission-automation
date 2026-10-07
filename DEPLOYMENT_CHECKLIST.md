@@ -134,15 +134,15 @@ The preview helper and restricted SSH boundary are implemented and tested locall
 
 ### 7. Enable the live workflow safely
 
-- [ ] Agree the production CLI seam and add tests before changing activation behavior.
-- [ ] Wire the existing app-bot delivery transport, selected generator, private Doc publisher and approved scope into the worker CLI.
+- [x] Agree and test the production CLI, durable OAuth refresh and host-deployment seams.
+- [x] Wire explicitly activated production publishing and separately scoped app-bot/webhook transports into the CLI; preview remains outbound-disabled.
 - [ ] Reject placeholders/unapproved destinations, missing model credentials and unsafe publishing settings before mutations.
 - [ ] Verify source reader membership, reminder bot eligibility, test destination, native Doc scopes/folder/privacy and editor access.
 - [ ] Prove names report + Doc/link in the development test group through the real deployed entry point, with separately approved content/model data processing.
-- [ ] Confirm private admin open ID, bot availability and Doc editor access, production data-processing approval, activation dates and reviewed Kenyan holidays.
+- [ ] Verify the private operator/admin reports group, its signed webhook and Doc editor access, activation dates and reviewed Kenyan holidays. Ongoing Gemini task-text processing is approved.
 - [ ] Activate the approved production destination; keep the manual report fallback and document rollback/reconciliation.
 
-**Current blocker:** the worker CLI deliberately rejects `ENABLE_OUTBOUND=true` and `BRIEF_MODE=publish`. The underlying library flow exists, but a deployed preview image cannot send or publish merely by changing environment settings. The demo scripts are not a service entry point.
+**Current gates:** local production/webhook implementation is ready for review, but the server still runs the old paused preview. Live canonical OAuth renewal, the report endpoint, Doc editor access and calendar activation remain unverified. The source reminder endpoint passed its approved synthetic test and one bot message was verified. Direct-admin messaging was rejected by the tenant boundary; the chosen route is a private reports group with a custom webhook bot.
 
 ### 8. Operational acceptance
 
@@ -154,20 +154,20 @@ The preview helper and restricted SSH boundary are implemented and tested locall
 
 ## Next decisions
 
-The paused preview is running. Live OAuth renewal, a fully reviewed live calendar, off-server backup policy and the production CLI seam remain open; negative tailnet/identity-policy checks also remain outstanding. The restricted deployment account and positive CI connection are verified. Development-test-group acceptance precedes admin activation. Passwords, private keys, grants and service tokens must never be copied into this checklist.
+The paused preview is running. Live OAuth renewal, production endpoint/Doc access and calendar acceptance remain open; off-server backups are explicitly deferred by the owner; negative tailnet/identity-policy checks also remain outstanding. The restricted deployment account and positive CI connection are verified. Development-test-group acceptance precedes admin activation. Passwords, private keys, grants and service tokens must never be copied into this checklist.
 
 See [RUNBOOK.md](RUNBOOK.md) for current commands, frozen-delivery recovery and backup/restore behavior.
 
-### Direct-admin destination update
+### Earlier direct-admin design (superseded by private reports group)
 
 - [x] Complete fresh worker device consent and verify the configured reader locally; credentials remain private.
 - [x] Resolve one admin contact; keep their identity only in private runtime configuration.
 - [x] Merge worker OAuth PR #21 and install the private grant on the paused server (UID 1000, mode 0600); reviewed image publication remains separate.
 - [x] Verify direct-user addressing, Doc editor permissions and restart recovery with synthetic fixtures: 466 source tests pass; 26 Docker checks passed, and the rebuilt corrected-scope login check also passes.
-- [ ] Configure `REPORT_RECIPIENT_TYPE=open_id` and the private `REPORT_RECIPIENT_ID` through a reviewed destination change; never redirect existing deliveries.
+- [ ] Configure `REPORT_RECIPIENT_TYPE=chat_id` and the private reports-group ID through the stopped-worker review; never redirect frozen deliveries.
 - [ ] Obtain explicit approval for an admin delivery/access acceptance test before activation.
 
-The admin replaces the former group destination. Development acceptance still uses the private test group, and reminders stay in the source group. No real recipient name or ID belongs in this document.
+Direct admin delivery was superseded on 7 October after a definitive cross-tenant rejection. The operator/admin private group is the selected production destination; source reminders use a separate custom bot. No real recipient name or ID belongs in this document.
 
 OAuth live diagnosis: the deployed reader failed, and a one-message API check returned HTTP 400/code `99991679`, explicitly requiring a history/message-read permission. Login now requires `im:message:readonly` before contacting Lark. Fresh corrected-scope consent and private server installation are complete. The deployed SDK returned a complete bounded history read with 18 messages; no unpause or sends occurred.
 
@@ -184,3 +184,19 @@ ghcr.io/mbeka02/task-list-submission-automation@sha256:13b4b7d12916035ae6c39f176
 Post-upgrade inspection verified the exact repository digest and source revision, running paused/non-root/read-only/no-port settings, preserved private credentials and SQLite `quick_check=ok`. Repeating the SDK source read on the replacement returned `complete` with 18 messages.
 
 The preview retains the development test-group scope. Admin identity is prepared privately, but a destination transition and live admin message/Doc-access acceptance remain separate gates. Restore mode stays enabled; sending and brief publishing stay disabled.
+
+
+### Webhook activation preparation — 7 October 2026
+
+- [x] Verify the new external reports group has exactly the operator and admin plus the custom bot. IDs remain private.
+- [x] Verify both distinct signed endpoints and signing secrets are present in Doppler `prv` and `prd`, without displaying them.
+- [x] Prove signed acceptance, rate-limit backoff, lost-receipt review, endpoint binding and separate reminder/report routing with synthetic HTTP and real SQLite.
+- [x] Prove paused production Compose and scoped Doppler selection in isolated Docker; final source regression passed 494 tests (27 container-only checks skipped).
+- [x] Send the approved one-time source reminder test; webhook acceptance and exactly one bot message are verified.
+- [ ] Complete reports-group webhook acceptance after Doc editor access passes. The approved synthetic Doc is private and its content verified; the group editor grant was denied twice (HTTP 403/code `1063002`). No reports-group test message was sent. The approved user-owned/user-authenticated diagnostic Doc passed exact group-editor and closed-link verification. No report message was sent. Production user-OAuth Doc publishing remains a proposed seam; individual-editor sharing is on hold.
+- [ ] Test live OAuth renewal using the canonical server grant and the reviewed matching image.
+- [ ] Review fixed-date calendar and any additional Gazette notices before unpausing; the existing preview calendar remains acceptance-only.
+- [ ] Review/merge, publish the tested digest, install matching root-owned helpers, transition the stopped recipient and deploy paused production.
+- [ ] Verify fresh-secret reload/key rotation and activate after remaining gates. Off-server backups are deferred; local upgrade snapshots remain active.
+
+Final rebuilt-image local release acceptance passed 29 checks, including both provider Doc flows, deployment failures, storage persistence, predecessor compatibility and paused production secret selection. These synthetic checks do not establish live endpoint destinations or Doc ACLs.

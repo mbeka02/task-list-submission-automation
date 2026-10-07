@@ -2,7 +2,7 @@
 
 A TypeScript worker that identifies who posted a daily task list in Lark and prepares an admin report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
 
-**Release status:** the optional brief implementation and local release acceptance are complete. Gemini and DeepSeek pass the same offline container publication/recovery drill; live quality and native Lark appearance/access are still unverified. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. The reviewed release runs as a paused server preview; its separate worker OAuth grant successfully reads source history. Live renewal, admin access acceptance and production activation remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
+**Release status:** production CLI sending and brief publishing are now available with explicit activation settings. The server still runs the reviewed **paused preview**; this branch does not activate it. Reports will go to a private operator/admin group using a signed custom webhook. Direct admin messaging was rejected by Lark's tenant boundary. Source history access is verified; live worker renewal, webhook delivery and reports-group Doc access remain deployment gates. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
 
 ## Table of contents
 
@@ -39,7 +39,7 @@ Only supported text and rich-text task lists posted in the main conversation cou
 
 The implemented modules include classification, paginated Lark history reads, OAuth renewal, SQLite persistence, delivery claims/retries, operator reconciliation, scheduling, backup/restore and a Docker release. A private-group smoke test proved app-bot sending through the CLI; it did not establish live worker SDK operation or production group eligibility.
 
-The optional AI brief supplements the names report. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. The scheduler now supports this path independently at 10:15. The worker CLI permits capture-only opt-in; model calls, Doc publication and sending remain disabled in that command.
+The optional AI brief supplements the names report. Its [input reader](src/brief-submissions.ts) captures qualifying main-group task lists originally sent before 10:15 Nairobi and labels sends from 10:01 onward as late, sharing the existing format and identity rules. Its [brief ledger](src/brief-ledger.ts) now freezes that input in SQLite, including source evidence and generation configuration versions. The [provider factory](src/brief-generator-factory.ts) selects the Gemini or DeepSeek adapter for one validated generation attempt. The [brief coordinator](src/brief-coordinator.ts) now bounds generation and produces source-extract fallback from that frozen input. Editable Doc publication and link-only announcements are implemented as opt-in library operations. The scheduler now supports this path independently at 10:15. The worker CLI supports capture-only and explicitly activated production publishing; preview always keeps sending disabled.
 
 ## System design
 
@@ -60,8 +60,8 @@ flowchart TB
     FREEZE["Report / reminder preparation<br/>Commit frozen text + UUID"]:::worker
     LEDGER[("SQLite ledger<br/>Evidence · reports · delivery state")]:::storage
     DELIVERY["Delivery coordinator<br/>Claims · retries · reconciliation"]:::worker
-    BOT["Lark app-bot adapter<br/>Available; CLI sending disabled"]:::outbound
-    TARGETS["Lark destinations<br/>Source: reminder · Admin: report"]:::lark
+    BOT["Selected outbound adapter<br/>Signed webhook / app bot"]:::outbound
+    TARGETS["Lark destinations<br/>Source: reminder · Private group: report"]:::lark
 
     CONFIG --> SCHEDULE
     SCHEDULE -->|10:01 report due| READER
@@ -83,7 +83,7 @@ flowchart TB
 
 **Legend:** blue = Lark resources and recipients; green = worker modules; purple = persistent storage; amber = configuration; orange = outbound adapter. Dashed arrows require future activation. The coordinator records outcomes back into SQLite; that return path is omitted to keep the diagram readable.
 
-**Optional AI brief — scheduled capture and opt-in library publication**
+**Optional AI brief — scheduled capture and production publication**
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"fontFamily":"sans-serif","fontSize":"15px","lineColor":"#64748b","primaryTextColor":"#0f172a","edgeLabelBackground":"#f8fafc"},"flowchart":{"curve":"linear","nodeSpacing":45,"rankSpacing":40}}}%%
@@ -98,8 +98,8 @@ flowchart TB
     DEEPSEEK["DeepSeek · native fetch<br/>Thinking disabled · one attempt"]:::provider
     VALIDATE["Shared draft validation<br/>Reference coverage · limits · safe failures"]:::worker
     DOC["Private native Lark Doc<br/>Write · verify content · verify editor access"]:::lark
-    LINK["Saved Doc link + existing delivery ledger<br/>Claims · stable UUID · acknowledgement"]:::worker
-    ADMIN["Admin<br/>Brief supplements the names report"]:::lark
+    LINK["Saved Doc link + existing delivery ledger<br/>Claims · endpoint binding · receipt"]:::worker
+    ADMIN["Private reports group<br/>Operator + admin"]:::lark
 
     SCHEDULE_AI --> CAPTURE
     SOURCE_AI --> CAPTURE
@@ -121,11 +121,11 @@ flowchart TB
     classDef planned fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-width:2px,stroke-dasharray:5 4;
 ```
 
-**Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The scheduler freezes brief input once at/after 10:15. CLI opt-in ends at that capture; the dashed edge requires library publish configuration and separate activation. Core failures do not suppress brief reads, and brief failures do not suppress core work. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
+**Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The scheduler freezes brief input once at/after 10:15. The dashed edge requires production publish configuration and outbound activation; preview can capture without publishing. Core failures do not suppress brief reads, and brief failures do not suppress core work. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
 
-History reads use the approved user's access because the source is an external group. Sending uses the approved app bot and explicit destination scope. Both stay bound to the same app ID; neither falls back to another account or group.
+History reads use the approved user's OAuth access because the source is an external group. Native Doc creation and permission checks use the app. Signed custom webhooks deliver to external groups; app-bot delivery remains available for supported development groups. Every adapter has an explicit destination scope and no account fallback.
 
-Production names reports and brief links target the **admin directly**. Configure `REPORT_RECIPIENT_TYPE=open_id` and keep `REPORT_RECIPIENT_ID` private. Development acceptance uses `chat_id` with the test-group ID; reminders always target the source group. The message adapter uses the matching address type, and Doc publication verifies editor access for that same user or group before announcing its link.
+Production names reports and brief links target a **private reports group containing the operator and admin**. Configure `REPORT_RECIPIENT_TYPE=chat_id`, its private `REPORT_RECIPIENT_ID`, and `REPORT_TRANSPORT=webhook`. Source reminders use their own `REMINDER_TRANSPORT=webhook` and separate signed endpoint. Keep URLs/signing secrets in Doppler. Doc publication independently grants and verifies editor access before announcing its link; a webhook does not grant Doc permissions.
 
 The existing `destinationChatId` storage column holds a durable recipient scope: old group IDs stay unchanged; new user keys encode `open_id` plus the ID. Report/brief uniqueness and recovery remain bound to that key. Changing recipients never redirects frozen jobs. Existing group-only configuration remains supported for release compatibility, but new configuration must supply exactly one recipient and cannot conflict with a legacy destination.
 
@@ -155,6 +155,8 @@ A qualifying list needs a heading such as **To Do**, **To-Do List**, **Todo List
 
 Unique delivery keys and guarded claims prevent competing workers from freely sending the same report. An expired claim becomes uncertain. The app API adapter can replay an uncertain request only within 55 minutes of the earliest attempt, using the original UUID within Lark's [documented one-hour deduplication window](https://open.larksuite.com/document/server-docs/im-v1/message/create). This reduces duplicate risk; it does not guarantee exactly-once delivery.
 
+Webhook delivery stores an endpoint fingerprint and an explicit acceptance receipt, with no invented message ID. It has **no UUID deduplication guarantee**: lost receipts/timeouts require review rather than automatic replay. Documented rate-limit rejection can retry with persisted backoff. An existing attempted delivery cannot switch webhook endpoints. Signing-secret rotation for the same endpoint preserves its binding. See [Lark's custom-bot contract](https://open.larksuite.com/document/client-docs/bot-v3/add-custom-bot).
+
 Reminder attempts stop at 10:00; automatic report attempts stop at the next Nairobi midnight. Outside safe retry windows, inspect and reconcile through the [runbook](RUNBOOK.md#inspect-and-recover-ordinary-work). Restored storage stays paused for review.
 
 ## Database design
@@ -167,7 +169,7 @@ The ledger has **six business tables** plus Drizzle's migration journal. [The Dr
 | --- | --- | --- |
 | `message` | Identify a source message and its latest known lifecycle state | `id`, `appId`, `sourceChatId`, `sourceMessageId`, JSON `senderIdentity`, `createdMs`, `updatedMs`, `deleted` |
 | `message_observation` | Preserve an immutable version the worker actually observed | `id`, `messageKey`, `fingerprint`, JSON `payload` with source content, normalized text, observation time and detector provenance |
-| `daily_delivery` | Freeze one report or reminder and track its delivery/recovery | Identity/scope: `id`, `appId`, `businessDate`, `sourceChatId`, `destinationChatId`, `kind`, `revision`; frozen content: `policyVersion`, `text`, `sendUuid`, `timeZone`, `cutoffMs`, `textHash`; lifecycle: `state`, `messageId`, `attemptCount`, `firstAttemptMs`, `nextAttemptMs`, `adapterKind`, `claimToken`, `claimExpiresMs`, `acknowledgedMs`, `lastError`, JSON `reconciliations` |
+| `daily_delivery` | Freeze one report or reminder and track its delivery/recovery | Identity/scope: `id`, `appId`, `businessDate`, `sourceChatId`, `destinationChatId`, `kind`, `revision`; frozen content: `policyVersion`, `text`, `sendUuid`, `timeZone`, `cutoffMs`, `textHash`; lifecycle: `state`, `messageId`, `attemptCount`, `firstAttemptMs`, `nextAttemptMs`, `adapterKind`, `transportBinding` (webhook endpoint hash), `claimToken`, `claimExpiresMs`, `acknowledgedMs`, `lastError`, JSON `reconciliations` |
 | `report_entry` | Snapshot each distinct submitter and the exact evidence used in a report | `deliveryId`, `position`, JSON `payload` with identity/name/evidence, `observationKey`, `senderIdentityKey` |
 | `daily_brief` | Freeze one optional brief input per scoped date/revision | Scope/ID, revision, capture/observation times, input fingerprint, policy/template/prompt/schema versions, provider/model, `outputMode=doc`, immutable `state=input_frozen`; generation state/kind, attempts/usage, deadline and claim/backoff; publication state/claim, Doc URL/hash/revision, write tokens, staging configuration and announcement delivery FK |
 | `brief_entry` | Ordered distinct brief membership, including labelled late submissions | `briefId`, `position`, `senderIdentityKey`, required `observationKey`, JSON `payload` with name/identity, original send time, timeliness and normalized source text |
@@ -360,7 +362,7 @@ For **free-tier demos**, use synthetic, non-confidential input unless the operat
 
 ### Bounded brief generation and fallback
 
-`openBriefCoordinator({ ...briefLedgerOptions, generator, template, instructions, clock?, docPublishing?, transport? })` exposes `completeDailyBrief({ briefId, now, deadlineMs? })`, `getBrief(briefId)`, `getDelivery(id)` and `close()`. Call it with an already-frozen brief and matching provider/model and policy/template/prompt/schema versions. Library worker publish mode invokes it with a deadline at the next Nairobi midnight. CLI capture-only never invokes it.
+`openBriefCoordinator({ ...briefLedgerOptions, generator, template, instructions, clock?, docPublishing?, transport? })` exposes `completeDailyBrief({ briefId, now, deadlineMs? })`, `getBrief(briefId)`, `getDelivery(id)` and `close()`. Call it with an already-frozen brief and matching provider/model and policy/template/prompt/schema versions. Library worker publish mode invokes it with a deadline at the next Nairobi midnight. CLI capture-only never invokes it; activated production publish mode does.
 
 - Reserve at most **two** model attempts before networking, within **45 seconds** from the original start. Each request lasts at most 15 seconds or the remaining budget. Restart preserves consumed reservations and the deadline.
 - Retry only transient failures, once. A fitting `Retry-After` is persisted and honored; otherwise the default delay is one second. Permanent, refused, truncated or invalid output goes directly to fallback.
@@ -371,12 +373,12 @@ Without `docPublishing`, `ready` returns an in-memory handoff and performs no Do
 
 ### Editable Doc publication
 
-Configure `docPublishing` with the approved app secret, private `stagingFolderToken` and tenant `documentBaseUrl` ending in `/docx/`; inject the existing scoped app-bot `transport` for announcements. Source reads continue using user OAuth. Production folder authorization, app availability to the admin and a private live appearance/access check remain deployment gates.
+Configure `docPublishing` with the approved app secret, private `stagingFolderToken` and tenant `documentBaseUrl` ending in `/docx/`; inject the reviewed scoped delivery `transport` for announcements (signed webhook for the private external group). Source reads continue using user OAuth. Production folder authorization, private reports-group editor access and a live appearance/access check remain deployment gates.
 
 1. Persist a fenced publication claim and canonical content hash, then create a Doc in the selected staging folder. Save its acknowledged URL before writing.
 2. Require closed link access and restricted collaborators before sending content. A new Doc's tenant-readable default is closed only when this app is its sole verified owner; read back settings and collaborators before writing. The bot needs `docs:permission.setting:write_only` for that change. Write native headings and bullets in batches of at most 50 blocks, recording each operation token beforehand. Names are bold, late posts are labelled, the heading uses a blue accent, and the closing note is muted and italic. Omit empty Notes.
 3. Read every block page at a pinned revision. Verify the hierarchy, order, text and formatting against the canonical hash, ignoring benign server defaults. Confirm the revision stayed unchanged.
-4. Establish and read back admin **edit** access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and stable-UUID retries. Without a transport, the announcement remains pending.
+4. Establish and read back the configured recipient's **edit** access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and adapter-specific recovery. Without a transport, the announcement remains pending.
 
 SQLite and backups retain the URL, hash, revision, operation tokens and recovery/delivery metadata, **never generated text or native block payloads**. The staging folder must be approved and private, including inherited permissions; runtime checks do not replace that setup review. Fixtures prove HTTP behavior, not tenant entitlement or actual Lark appearance.
 
@@ -388,24 +390,28 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 
 | Setting | Required configuration |
 | --- | --- |
-| `APP_MODE`, `ENABLE_OUTBOUND` | Keep `preview` and `false` |
+| `APP_MODE`, `ENABLE_OUTBOUND` | Safe default `preview` / `false`; reviewed production uses `production` / `true` |
 | `BUSINESS_TIMEZONE` | `Africa/Nairobi` |
 | `SQLITE_FILE_PATH` | Dedicated local preview ledger; parent directory must exist |
 | `LARK_APP_ID`, `SOURCE_CHAT_ID` | Approved app and source-group scope |
-| `REPORT_RECIPIENT_TYPE`, `REPORT_RECIPIENT_ID` | `open_id` + privately configured admin ID; use `chat_id` + test-group ID for development |
+| `REPORT_TRANSPORT`, `REMINDER_TRANSPORT` | `app_bot` (default) or `webhook`; select each independently |
+| `REPORT_WEBHOOK_URL`, `REPORT_WEBHOOK_SIGNING_SECRET` | Doppler secrets for the reports-group custom bot |
+| `REMINDER_WEBHOOK_URL`, `REMINDER_WEBHOOK_SIGNING_SECRET` | Separate Doppler secrets for the source-group reminder bot |
+| `REPORT_RECIPIENT_TYPE`, `REPORT_RECIPIENT_ID` | `chat_id` + private reports-group ID; `open_id` remains supported for same-tenant app-bot recipients |
 | `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by login and `worker run`; separate worker user-OAuth grant under the approved app/account |
 | `LARK_OAUTH_SCOPES` | Explicit user read scopes for `worker-auth`; `offline_access` is added automatically |
 | `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
 | `WORKER_CHECK_INTERVAL_MS` | Delay after each completed check; default `60000` |
 | `WORKER_RESTORE_MODE` | Pause work during recovery; a persistent restore marker also enforces the pause |
-| `ENABLE_DAILY_BRIEF`, `BRIEF_MODE` | Default `false`; opt in with `true` and `capture_only`. CLI rejects `publish` |
+| `ENABLE_DAILY_BRIEF`, `BRIEF_MODE` | Default `false`; `capture_only` or explicitly activated production `publish` |
 | `BRIEF_ACTIVATION_DATE` | Explicit reviewed start date within calendar coverage, on/after core activation |
 | `BRIEF_PROVIDER`, `GEMINI_MODEL` / `DEEPSEEK_MODEL` | Freeze provider/model metadata; no model key is required for capture/status |
 | `BRIEF_TEMPLATE_VERSION`, `BRIEF_PROMPT_VERSION`, `BRIEF_SCHEMA_VERSION` | Explicit versions recorded with frozen input |
+| `LARK_DOC_STAGING_FOLDER_TOKEN`, `LARK_DOCUMENT_BASE_URL` | Approved app-owned private folder and tenant URL ending in `/docx/` for publication |
 
 No approved annual holiday dataset is bundled. Initial worker login uses `pnpm worker-auth start` and `pnpm worker-auth finish`; see [worker login](RUNBOOK.md#provision-the-workers-own-oauth-login). The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
 
-For server deployment, follow the [step-by-step checklist](DEPLOYMENT_CHECKLIST.md) and [preview host setup](deploy/README.md). GitHub Actions verifies and publishes a tested image; a separately approved manual deployment connects through Tailscale and preserves host-mounted SQLite and OAuth credentials. Preview sending and brief publication remain disabled.
+For server deployment, follow the [step-by-step checklist](DEPLOYMENT_CHECKLIST.md) and [host setup](deploy/README.md). GitHub Actions verifies and publishes a tested image; a separately approved manual deployment connects through Tailscale and preserves host-mounted SQLite and OAuth credentials. Preview sending and brief publication remain disabled.
 
 For Docker builds, acceptance, volume preparation and startup, follow the [runbook](RUNBOOK.md#build-and-exercise-the-local-image). The supplied Compose package is offline, publishes no ports and forces sending off. A due report that needs Lark remains blocked offline.
 
@@ -420,7 +426,7 @@ flowchart TB
     GATE["Preview deployment approval<br/>Restricted Tailscale + SSH identity"]:::release
     HOST["Ubuntu · Docker Compose<br/>Replace one worker"]:::host
     DATA[("Private host storage<br/>SQLite · OAuth · backups")]:::data
-    DOPPLER["Doppler · scoped service token<br/>App/model secrets at deployment"]:::secret
+    DOPPLER["Doppler · scoped service token<br/>App/model/webhook secrets at deployment"]:::secret
     CI --> IMAGE --> GATE --> HOST
     DATA --> HOST
     DOPPLER --> HOST
@@ -444,9 +450,9 @@ These paths survive image replacement. The container runs as UID/GID 1000 with a
 
 1. Merge a reviewed PR after **CI** passes. Run **Publish image** from `main`; it verifies and publishes the same tested image, then records its SHA-256 digest.
 2. Run **Deploy preview** with operation `check` to verify restricted GitHub-runner connectivity. Select `deploy` with the published digest and approve the protected `preview` environment.
-3. Inspect worker status and correlated logs. Keep restore mode and outbound restrictions until live calendar, OAuth renewal, admin bot availability/Doc access and activation checks pass.
+3. Inspect worker status and correlated logs. Keep restore mode and outbound restrictions until live calendar, OAuth renewal, private-group webhook/Doc access and activation checks pass.
 
-**Current state:** the reviewed direct-admin release is deployed as a paused preview. Corrected-scope worker consent is complete, and a bounded source-history read succeeded on the server. Live renewal remains unverified. The preview retains its test-group destination; changing to the privately configured admin requires a stopped-worker scope review and live access acceptance. Publishing and deployment are manual workflows; merging does not activate the worker. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
+**Current state:** the reviewed release is deployed as a paused preview; production/webhook activation changes are not installed yet. Corrected-scope worker consent is complete, and a bounded source-history read succeeded on the server. Live renewal remains unverified. The preview retains its test-group destination; changing to the private reports group requires a stopped-worker scope review and live webhook/Doc access acceptance. Publishing and deployment are manual workflows; merging does not activate the worker. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
 
 ## Usage and operations
 
@@ -462,7 +468,7 @@ pnpm worker run
 
 With the optional brief enabled, `run` captures qualifying sends in `[midnight, 10:15)` after 10:15, even when it starts later that day. It reuses today's frozen input on restart, without rereading or expanding that interval. `status` reports `brief` and metadata-only `briefBackfill` (at most 31 older items). Older missing or unfinished jobs require reviewed manual work; they are never automatically generated or published. Restore pauses all work. Changing frozen generation versions blocks publication with a visible reason.
 
-In library publish mode, the coordinator owns model attempts, fallback, verified Doc publication and saved-link delivery. Scheduled model calls, Doc mutations and sends stop at the next Nairobi midnight; Doc operations reserve their 15-second timeout within that window. Link retries never regenerate content or overwrite human edits. The CLI still rejects both `BRIEF_MODE=publish` and `ENABLE_OUTBOUND=true`.
+In library publish mode, the coordinator owns model attempts, fallback, verified Doc publication and saved-link delivery. Scheduled model calls, Doc mutations and sends stop at the next Nairobi midnight; Doc operations reserve their 15-second timeout within that window. Link retries never regenerate content or overwrite human edits. The CLI accepts publication only with `APP_MODE=production`, `ENABLE_OUTBOUND=true` and complete reviewed recipient/provider/Doc settings; restore mode still pauses all work.
 
 Inspect a frozen delivery locally:
 
@@ -477,7 +483,7 @@ pnpm delivery status --id <delivery-id>
 | Stop, replace or roll back the container | [Release recovery](RUNBOOK.md#stop-replace-and-roll-back) |
 | Validate access and prepare future activation | [Deferred live acceptance](RUNBOOK.md#deferred-live-acceptance) |
 
-Unresolved reads or candidates are not valid zero-submission days. Leave uncertain sends unresolved until evidence supports a decision; reconciliation itself never sends. Retention/pruning, off-server backup scheduling, restore release and production activation are not configured. The manual admin list remains the fallback.
+Unresolved reads or candidates are not valid zero-submission days. Leave uncertain sends unresolved until evidence supports a decision; reconciliation itself never sends. Retention/pruning, off-server backup scheduling, restore release and production activation remain pending on the server. The manual admin list remains the fallback.
 
 ## Observability
 

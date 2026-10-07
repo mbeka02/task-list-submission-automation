@@ -6,13 +6,23 @@ import {
   type HttpInstance,
   LoggerLevel,
   withTenantToken,
+  withUserAccessToken,
 } from "@larksuiteoapi/node-sdk";
 import type { BriefContent } from "./brief-content.js";
 import { recipientFromKey } from "./report-recipient.js";
+import { fileUserAccessToken } from "./user-oauth-credentials.js";
 
-/** App-owned native Docs, staged privately in an explicitly selected folder. */
+/** Native Docs staged privately; an explicit user grant can own Docs for external-group sharing. */
 export interface BriefDocOptions {
   appSecret: string;
+  /** Defaults to app identity for existing integrations; credentials never enter the ledger. */
+  auth?: {
+    strategy: "user_oauth";
+    readerOpenId: string;
+    credentialFile: string;
+  };
+  /** Group readers cannot edit user-owned production briefs. Legacy integrations default to edit. */
+  recipientPermission?: "view" | "edit";
   stagingFolderToken: string;
   /** Approved tenant URL ending in /docx/; links never come from model output. */
   documentBaseUrl: string;
@@ -118,7 +128,7 @@ export function renderBriefDoc(content: BriefContent) {
   return { blocks, hash: digest(blocks.map(canonicalBlock)) };
 }
 
-/** Internal SDK adapter: bounded requests, app identity only, and no content-bearing logs. */
+/** Internal SDK adapter: bounded requests, explicit identity, and no content-bearing logs. */
 export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
   const base = new URL(options.documentBaseUrl);
   if (
@@ -130,7 +140,13 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
     base.username ||
     base.password ||
     base.port ||
-    !/^[A-Za-z0-9_-]+$/.test(options.stagingFolderToken)
+    !/^[A-Za-z0-9_-]+$/.test(options.stagingFolderToken) ||
+    (options.auth &&
+      (options.auth.strategy !== "user_oauth" ||
+        !/^ou_[A-Za-z0-9_]+$/.test(options.auth.readerOpenId) ||
+        !options.auth.credentialFile.trim())) ||
+    (options.recipientPermission !== undefined &&
+      !["view", "edit"].includes(options.recipientPermission))
   )
     throw new Error("Invalid private Doc configuration");
   const http = defaultHttpInstance.create({
@@ -156,8 +172,43 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
     },
   });
   let token = "";
+  const getUserGrant = options.auth
+    ? fileUserAccessToken({
+        credentialFile: options.auth.credentialFile,
+        readerOpenId: options.auth.readerOpenId,
+        appId,
+        client,
+        clock: Date.now,
+      })
+    : null;
+  // Recheck/renew the private grant for each request; Doc work can span token expiry.
+  const requestAuth = async () =>
+    getUserGrant
+      ? withUserAccessToken((await getUserGrant()).accessToken)
+      : withTenantToken(token);
+  // Renewal can consume the remaining lease/window; fence again immediately before a mutation.
+  const mutationAuth = async (guard: () => void) => {
+    const auth = await requestAuth();
+    guard();
+    return auth;
+  };
+  const recipientPermission = options.recipientPermission ?? "edit";
+  const ownsDocument = (
+    member:
+      | { member_type: string; member_id: string; perm: string }
+      | undefined,
+  ) =>
+    member?.perm === "full_access" &&
+    (options.auth
+      ? member.member_type === "openid" &&
+        member.member_id === options.auth.readerOpenId
+      : member.member_type === "appid" && member.member_id === appId);
   return {
     async authenticate() {
+      if (getUserGrant) {
+        await getUserGrant();
+        return;
+      }
       const response: unknown = await client.auth.tenantAccessToken.internal({
         data: { app_id: appId, app_secret: options.appSecret },
       });
@@ -173,10 +224,10 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         throw new Error("Doc credentials unavailable");
       token = response.tenant_access_token;
     },
-    async create(title: string) {
+    async create(title: string, guard: () => void) {
       const response = await client.docx.document.create(
         { data: { title, folder_token: options.stagingFolderToken } },
-        withTenantToken(token),
+        await mutationAuth(guard),
       );
       const document = response.data?.document;
       if (
@@ -192,30 +243,28 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
       };
     },
     async preparePrivate(id: string, guard: () => void) {
-      const getSettings = () =>
+      const getSettings = async () =>
         client.drive.v2.permissionPublic.get(
           { path: { token: id }, params: { type: "docx" } },
-          withTenantToken(token),
+          await requestAuth(),
         );
       let settings = await getSettings();
-      const getCollaborators = () =>
+      const getCollaborators = async () =>
         client.drive.permissionMember.list(
           { path: { token: id }, params: { type: "docx" } },
-          withTenantToken(token),
+          await requestAuth(),
         );
       let collaborators = await getCollaborators();
       let members = collaborators.data?.items;
       // New Docs can default to tenant-readable even inside a private folder.
-      // Close that default only when this app is the sole verified owner.
+      // Close that default only when the configured identity is the sole verified owner.
       if (
         settings.code === 0 &&
         settings.data?.permission_public?.link_share_entity ===
           "tenant_readable" &&
         collaborators.code === 0 &&
         members?.length === 1 &&
-        members[0]?.member_type === "appid" &&
-        members[0]?.member_id === appId &&
-        members[0]?.perm === "full_access"
+        ownsDocument(members[0])
       ) {
         guard();
         const changed = await client.drive.permissionPublic.patch(
@@ -224,7 +273,7 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
             params: { type: "docx" },
             data: { link_share_entity: "closed" },
           },
-          withTenantToken(token),
+          await mutationAuth(guard),
         );
         if (changed.code !== 0)
           throw new Error("Private staging access unverified");
@@ -232,12 +281,44 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         collaborators = await getCollaborators();
         members = collaborators.data?.items;
       }
+      // A viewer-only brief also reserves collaborator management to its sole owner.
+      if (
+        options.auth &&
+        settings.code === 0 &&
+        collaborators.code === 0 &&
+        members?.length === 1 &&
+        ownsDocument(members[0]) &&
+        settings.data?.permission_public?.manage_collaborator_entity !==
+          "collaborator_full_access"
+      ) {
+        guard();
+        const changed = await client.drive.v2.permissionPublic.patch(
+          {
+            path: { token: id },
+            params: { type: "docx" },
+            data: {
+              link_share_entity: "closed",
+              manage_collaborator_entity: "collaborator_full_access",
+            },
+          },
+          await mutationAuth(guard),
+        );
+        if (changed.code !== 0)
+          throw new Error("Owner-only sharing unverified");
+        settings = await getSettings();
+        collaborators = await getCollaborators();
+        members = collaborators.data?.items;
+      }
       if (
         settings.code !== 0 ||
         settings.data?.permission_public?.link_share_entity !== "closed" ||
+        (options.auth &&
+          settings.data?.permission_public?.manage_collaborator_entity !==
+            "collaborator_full_access") ||
         collaborators.code !== 0 ||
         !members ||
         members.length > 1 ||
+        (options.auth && (members.length !== 1 || !ownsDocument(members[0]))) ||
         members.some(
           (member) =>
             member.perm !== "full_access" ||
@@ -251,6 +332,7 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
       blocks: Block[],
       operationToken: string,
       revision: number,
+      guard: () => void,
     ) {
       const response = await client.docx.documentBlockChildren.create(
         {
@@ -261,7 +343,7 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
           },
           data: { children: blocks, index: -1 },
         },
-        withTenantToken(token),
+        await mutationAuth(guard),
       );
       if (
         response.code !== 0 ||
@@ -273,7 +355,7 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
     async verify(id: string, title: string, expectedHash: string) {
       const metadata = await client.docx.document.get(
         { path: { document_id: id } },
-        withTenantToken(token),
+        await requestAuth(),
       );
       const revision = metadata.data?.document?.revision_id;
       if (
@@ -301,7 +383,7 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
               ...(pageToken ? { page_token: pageToken } : {}),
             },
           },
-          withTenantToken(token),
+          await requestAuth(),
         );
         if (
           response.code !== 0 ||
@@ -342,7 +424,7 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         throw new Error("Doc content unverified");
       const current = await client.docx.document.get(
         { path: { document_id: id } },
-        withTenantToken(token),
+        await requestAuth(),
       );
       if (
         current.code !== 0 ||
@@ -356,25 +438,30 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
       const recipient = recipientFromKey(destinationKey);
       const memberType = recipient.type === "open_id" ? "openid" : "openchat";
       const memberId = recipient.id;
-      const list = () =>
+      const list = async () =>
         client.drive.permissionMember.list(
           { path: { token: id }, params: { type: "docx" } },
-          withTenantToken(token),
+          await requestAuth(),
         );
       const existing = await list();
       if (existing.code !== 0 || !existing.data?.items)
         throw new Error("Doc collaborators unverified");
       if (
+        (options.auth && !existing.data.items.some(ownsDocument)) ||
         existing.data.items.some(
           (member) =>
             !(
               member.member_type === memberType &&
               member.member_id === memberId &&
-              ["view", "edit"].includes(member.perm)
+              (recipientPermission === "edit"
+                ? ["view", "edit"].includes(member.perm)
+                : member.perm === "view")
             ) &&
             !(
               member.perm === "full_access" &&
-              ["openid", "userid", "appid"].includes(member.member_type)
+              (options.auth
+                ? ownsDocument(member)
+                : ["openid", "userid", "appid"].includes(member.member_type))
             ),
         ) ||
         existing.data.items.filter((member) => member.perm === "full_access")
@@ -383,33 +470,36 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         throw new Error("Unexpected Doc collaborators");
       const settings = await client.drive.v2.permissionPublic.get(
         { path: { token: id }, params: { type: "docx" } },
-        withTenantToken(token),
+        await requestAuth(),
       );
       if (
         settings.code !== 0 ||
-        settings.data?.permission_public?.link_share_entity !== "closed"
+        settings.data?.permission_public?.link_share_entity !== "closed" ||
+        (options.auth &&
+          settings.data?.permission_public?.manage_collaborator_entity !==
+            "collaborator_full_access")
       )
         throw new Error("Public Doc access unverified");
       const granted = existing.data.items.some(
         (member) =>
           member.member_type === memberType &&
           member.member_id === memberId &&
-          member.perm === "edit",
+          member.perm === recipientPermission,
       );
       if (!granted) {
         guard();
         const response = await client.drive.permissionMember.create(
           {
             path: { token: id },
-            params: { type: "docx", need_notification: false },
+            params: { type: "docx" },
             data: {
               member_type: memberType,
               member_id: memberId,
-              perm: "edit",
+              perm: recipientPermission,
               type: recipient.type === "open_id" ? "user" : "chat",
             },
           },
-          withTenantToken(token),
+          await mutationAuth(guard),
         );
         if (response.code !== 0) throw new Error("Doc sharing unverified");
       }
@@ -417,16 +507,21 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
       if (
         members.code !== 0 ||
         !members.data?.items ||
+        (options.auth && !members.data.items.some(ownsDocument)) ||
         members.data.items.some(
           (member) =>
             !(
               member.member_type === memberType &&
               member.member_id === memberId &&
-              ["view", "edit"].includes(member.perm)
+              (recipientPermission === "edit"
+                ? ["view", "edit"].includes(member.perm)
+                : member.perm === "view")
             ) &&
             !(
               member.perm === "full_access" &&
-              ["openid", "userid", "appid"].includes(member.member_type)
+              (options.auth
+                ? ownsDocument(member)
+                : ["openid", "userid", "appid"].includes(member.member_type))
             ),
         ) ||
         members.data.items.filter((member) => member.perm === "full_access")
@@ -435,10 +530,23 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
           (member) =>
             member.member_type === memberType &&
             member.member_id === memberId &&
-            member.perm === "edit",
+            member.perm === recipientPermission,
         )
       )
-        throw new Error("Doc editor access unverified");
+        throw new Error("Doc recipient access unverified");
+      if (options.auth) {
+        const final = await client.drive.v2.permissionPublic.get(
+          { path: { token: id }, params: { type: "docx" } },
+          await requestAuth(),
+        );
+        if (
+          final.code !== 0 ||
+          final.data?.permission_public?.link_share_entity !== "closed" ||
+          final.data?.permission_public?.manage_collaborator_entity !==
+            "collaborator_full_access"
+        )
+          throw new Error("Owner-only sharing unverified");
+      }
     },
   };
 }

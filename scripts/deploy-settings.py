@@ -30,7 +30,7 @@ for name in ("task-list.sqlite", "task-list.sqlite-wal", "task-list.sqlite-shm",
         regular_private(path, 1000)
 
 required = {"LARK_APP_ID", "SOURCE_CHAT_ID", "ACTIVATION_DATE", "LARK_READER_OPEN_ID"}
-allowed = required | {"APP_MODE", "ENABLE_OUTBOUND", "ENABLE_DAILY_BRIEF", "BRIEF_MODE", "BRIEF_ACTIVATION_DATE", "BRIEF_PROVIDER", "GEMINI_MODEL", "DEEPSEEK_MODEL", "BRIEF_TEMPLATE_VERSION", "BRIEF_PROMPT_VERSION", "BRIEF_SCHEMA_VERSION", "LARK_DOC_STAGING_FOLDER_TOKEN", "LARK_DOCUMENT_BASE_URL","MANAGEMENT_CHAT_ID", "REPORT_RECIPIENT_TYPE", "REPORT_RECIPIENT_ID", "REPORT_TRANSPORT", "REMINDER_TRANSPORT", "POLICY_VERSION", "LOG_LEVEL", "WORKER_CHECK_INTERVAL_MS", "WORKER_RESTORE_MODE"}
+allowed = required | {"APP_MODE", "ENABLE_OUTBOUND", "ENABLE_DAILY_BRIEF", "BRIEF_MODE", "BRIEF_ACTIVATION_DATE", "BRIEF_PROVIDER", "GEMINI_MODEL", "DEEPSEEK_MODEL", "BRIEF_TEMPLATE_VERSION", "BRIEF_PROMPT_VERSION", "BRIEF_SCHEMA_VERSION", "LARK_DOC_STAGING_FOLDER_TOKEN", "LARK_DOCUMENT_BASE_URL", "LARK_DOC_AUTH_STRATEGY", "MANAGEMENT_CHAT_ID", "REPORT_RECIPIENT_TYPE", "REPORT_RECIPIENT_ID", "REPORT_TRANSPORT", "REMINDER_TRANSPORT", "POLICY_VERSION", "LOG_LEVEL", "WORKER_CHECK_INTERVAL_MS", "WORKER_RESTORE_MODE"}
 fixed = {"APP_MODE": "preview", "ENABLE_OUTBOUND": "false", "ENABLE_DAILY_BRIEF": "false", "BUSINESS_TIMEZONE": "Africa/Nairobi"}
 values = {}
 settings=Path(os.environ.get("TASK_LIST_SETTINGS_FILE", str(root/"worker.env")))
@@ -75,5 +75,8 @@ else:
         assert values.get("BRIEF_MODE") in ("capture_only", "publish")
         assert values.get("BRIEF_PROVIDER") in ("gemini", "deepseek")
         if values["BRIEF_MODE"]=="publish":
+            assert values.get("LARK_DOC_AUTH_STRATEGY", "app") in ("app", "user_oauth")
+            if values.get("LARK_DOC_AUTH_STRATEGY")=="user_oauth":
+                assert values["REPORT_RECIPIENT_TYPE"]=="chat_id"
             secrets+=",GEMINI_API_KEY" if values["BRIEF_PROVIDER"]=="gemini" else ",DEEPSEEK_API_KEY"
 print(mode+" "+secrets)

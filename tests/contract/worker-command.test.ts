@@ -467,7 +467,7 @@ test("production sends source reminders through a separately bound signed webhoo
 });
 
 test.each(["app_bot", "webhook"])(
-  "production publishes a verified editable brief and names report using %s",
+  "production publishes a verified brief and names report using %s",
   (transport) => {
     const environment = fixture();
     const credentialFile = join(environment.directory, "oauth.json");
@@ -513,6 +513,7 @@ test.each(["app_bot", "webhook"])(
         BRIEF_SCHEMA_VERSION: "schema-v1",
         LARK_DOC_STAGING_FOLDER_TOKEN: "folderSynthetic",
         LARK_DOCUMENT_BASE_URL: "https://example.larksuite.com/docx/",
+        LARK_DOC_AUTH_STRATEGY: transport === "webhook" ? "user_oauth" : "app",
       });
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({
@@ -537,7 +538,7 @@ test.each(["app_bot", "webhook"])(
   },
 );
 
-test("production publishing status is read-only and does not require model or app secrets", () => {
+test("user-owned production publishing status is read-only and needs no credentials or secrets", () => {
   const environment = fixture();
   try {
     const before = readFileSync(environment.databasePath);
@@ -545,8 +546,8 @@ test("production publishing status is read-only and does not require model or ap
       APP_MODE: "production",
       ENABLE_OUTBOUND: "true",
       MANAGEMENT_CHAT_ID: undefined,
-      REPORT_RECIPIENT_TYPE: "open_id",
-      REPORT_RECIPIENT_ID: "ou_admin",
+      REPORT_RECIPIENT_TYPE: "chat_id",
+      REPORT_RECIPIENT_ID: "oc_private_reports",
       ENABLE_DAILY_BRIEF: "true",
       BRIEF_MODE: "publish",
       BRIEF_ACTIVATION_DATE: "2026-10-02",
@@ -557,6 +558,12 @@ test("production publishing status is read-only and does not require model or ap
       BRIEF_SCHEMA_VERSION: "schema-v1",
       LARK_DOC_STAGING_FOLDER_TOKEN: "folderSynthetic",
       LARK_DOCUMENT_BASE_URL: "https://example.larksuite.com/docx/",
+      LARK_DOC_AUTH_STRATEGY: "user_oauth",
+      LARK_READER_OPEN_ID: "ou_operator",
+      LARK_USER_CREDENTIAL_FILE: join(
+        environment.directory,
+        "nonexistent-grant.json",
+      ),
     });
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({

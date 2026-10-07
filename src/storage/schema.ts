@@ -178,6 +178,10 @@ export const dailyBriefs = sqliteTable(
     publicationLastError: text(),
     stagingFolderToken: text(),
     documentBaseUrl: text(),
+    // Freeze identity and access with creation intent so recovery cannot broaden sharing.
+    documentAuthStrategy: text({ enum: ["app", "user_oauth"] }),
+    documentOwnerOpenId: text(),
+    documentRecipientPermission: text({ enum: ["view", "edit"] }),
     announcementDeliveryId: text().references(() => deliveries.id),
     captureThroughMs: integer().notNull(),
     observedAtMs: integer().notNull(),

@@ -93,6 +93,7 @@ export REPORT_WEBHOOK_URL=https://open.larksuite.com/open-apis/bot/v2/hook/aaaaa
 export REPORT_WEBHOOK_SIGNING_SECRET=synthetic-report-secret
 export REMINDER_WEBHOOK_URL=https://open.larksuite.com/open-apis/bot/v2/hook/bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb
 export REMINDER_WEBHOOK_SIGNING_SECRET=synthetic-reminder-secret
+export GEMINI_API_KEY=synthetic-gemini-secret
 exec "$@"
 `,
     { mode: 0o700 },
@@ -705,7 +706,7 @@ acceptance(
 );
 
 acceptance(
-  "a paused production webhook deployment selects only its required Doppler secrets",
+  "paused user-owned brief deployment selects only required Doppler secrets and preserves the grant",
   () => {
     const f = fixture(true);
     try {
@@ -721,7 +722,7 @@ acceptance(
             "REPORT_RECIPIENT_ID=ou_admin",
             "REPORT_RECIPIENT_ID=oc_private_reports",
           ) +
-          "\nAPP_MODE=production\nENABLE_OUTBOUND=true\nENABLE_DAILY_BRIEF=false\nWORKER_RESTORE_MODE=true\nREPORT_TRANSPORT=webhook\nREMINDER_TRANSPORT=webhook\n",
+          "\nAPP_MODE=production\nENABLE_OUTBOUND=true\nENABLE_DAILY_BRIEF=true\nBRIEF_MODE=publish\nBRIEF_ACTIVATION_DATE=2099-01-01\nBRIEF_PROVIDER=gemini\nGEMINI_MODEL=gemini-3.5-flash-lite\nBRIEF_TEMPLATE_VERSION=template-v1\nBRIEF_PROMPT_VERSION=prompt-v1\nBRIEF_SCHEMA_VERSION=schema-v1\nLARK_DOC_AUTH_STRATEGY=user_oauth\nLARK_DOC_STAGING_FOLDER_TOKEN=folderSynthetic\nLARK_DOCUMENT_BASE_URL=https://example.larksuite.com/docx/\nWORKER_RESTORE_MODE=true\nREPORT_TRANSPORT=webhook\nREMINDER_TRANSPORT=webhook\n",
         { mode: 0o600 },
       );
       const result = f.deploy({
@@ -734,6 +735,7 @@ acceptance(
           .split(",")
           .sort(),
       ).toEqual([
+        "GEMINI_API_KEY",
         "LARK_APP_SECRET",
         "REMINDER_WEBHOOK_SIGNING_SECRET",
         "REMINDER_WEBHOOK_URL",
@@ -750,8 +752,9 @@ acceptance(
           "REPORT_TRANSPORT=webhook",
           "REMINDER_TRANSPORT=webhook",
           "REPORT_WEBHOOK_SIGNING_SECRET=synthetic-report-secret",
-          "GEMINI_API_KEY=",
+          "GEMINI_API_KEY=synthetic-gemini-secret",
           "DEEPSEEK_API_KEY=",
+          "LARK_DOC_AUTH_STRATEGY=user_oauth",
         ]),
       );
       expect(f.grantContent()).toBe("synthetic rotating grant");

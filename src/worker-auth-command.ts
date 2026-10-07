@@ -339,7 +339,18 @@ async function main() {
       "offline_access",
     ]),
   ].sort();
+  const docStrategy = process.env.LARK_DOC_AUTH_STRATEGY ?? "app";
+  if (!["app", "user_oauth"].includes(docStrategy))
+    throw new LoginError("invalid_configuration");
+  const docScopes = [
+    "docx:document",
+    "docs:permission.member:retrieve",
+    "docs:permission.member:create",
+    "docs:permission.setting:read",
+    "docs:permission.setting:write_only",
+  ];
   const allowedScopes = new Set([
+    ...(docStrategy === "user_oauth" ? docScopes : []),
     "offline_access",
     "im:message:readonly",
     "im:message.group_msg:get_as_user",
@@ -348,6 +359,8 @@ async function main() {
   ]);
   if (
     scopes.some((scope) => !allowedScopes.has(scope)) ||
+    (docStrategy === "user_oauth" &&
+      !docScopes.every((scope) => scopes.includes(scope))) ||
     !scopes.includes("im:message:readonly")
   )
     throw new LoginError("invalid_configuration");

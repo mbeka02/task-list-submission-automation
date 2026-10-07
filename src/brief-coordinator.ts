@@ -102,7 +102,13 @@ export function openBriefCoordinator(input: BriefCoordinatorOptions) {
       docs &&
       brief.publicationState !== "pending" &&
       (brief.stagingFolderToken !== options.docPublishing?.stagingFolderToken ||
-        brief.documentBaseUrl !== options.docPublishing?.documentBaseUrl)
+        brief.documentBaseUrl !== options.docPublishing?.documentBaseUrl ||
+        (brief.documentAuthStrategy ?? "app") !==
+          (options.docPublishing?.auth?.strategy ?? "app") ||
+        brief.documentOwnerOpenId !==
+          (options.docPublishing?.auth?.readerOpenId ?? null) ||
+        (brief.documentRecipientPermission ?? "edit") !==
+          (options.docPublishing?.recipientPermission ?? "edit"))
     )
       return {
         status: "blocked" as const,
@@ -467,12 +473,18 @@ export function openBriefCoordinator(input: BriefCoordinatorOptions) {
       const result = await work();
       operationalEvent("info", "document_step_completed", {
         stage,
+        documentAuthStrategy: options.docPublishing?.auth?.strategy ?? "app",
+        documentRecipientPermission:
+          options.docPublishing?.recipientPermission ?? "edit",
         durationMs: Math.round(performance.now() - started),
       });
       return result;
     } catch (error) {
       operationalEvent("warn", "document_step_failed", {
         stage,
+        documentAuthStrategy: options.docPublishing?.auth?.strategy ?? "app",
+        documentRecipientPermission:
+          options.docPublishing?.recipientPermission ?? "edit",
         reason: "document_operation_unverified",
         durationMs: Math.round(performance.now() - started),
       });
@@ -532,6 +544,10 @@ export function openBriefCoordinator(input: BriefCoordinatorOptions) {
         documentHash: rendered.hash,
         stagingFolderToken: options.docPublishing.stagingFolderToken,
         documentBaseUrl: options.docPublishing.documentBaseUrl,
+        documentAuthStrategy: options.docPublishing.auth?.strategy ?? "app",
+        documentOwnerOpenId: options.docPublishing.auth?.readerOpenId ?? null,
+        documentRecipientPermission:
+          options.docPublishing.recipientPermission ?? "edit",
       })
       .where(
         and(
@@ -554,7 +570,7 @@ export function openBriefCoordinator(input: BriefCoordinatorOptions) {
       await documentStep("authenticate", () => docs.authenticate());
       fence.guard();
       const created = await documentStep("create", () =>
-        docs.create(content.title),
+        docs.create(content.title, fence.guard),
       );
       const id = new URL(created.url).pathname.split("/").at(-1);
       if (!id) throw new Error("Doc reference unavailable");
@@ -576,6 +592,7 @@ export function openBriefCoordinator(input: BriefCoordinatorOptions) {
             rendered.blocks.slice(offset, offset + 50),
             tokens.at(-1) ?? "",
             revision,
+            fence.guard,
           ),
         );
         fence.save({ documentRevision: revision });

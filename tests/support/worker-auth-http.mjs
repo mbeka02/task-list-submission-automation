@@ -74,6 +74,9 @@ const server = createServer(async (req, res) => {
         refresh_token_expires_in: 604800,
         scope: "offline_access im:message:readonly",
       };
+    if (body?.access_token && process.env.OAUTH_TEST_MODE === "doc_scopes")
+      body.scope =
+        "offline_access im:message:readonly docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only";
     if (body?.access_token && process.env.OAUTH_TEST_MODE === "missing_scope")
       body.scope = "offline_access";
     if (body?.access_token && process.env.OAUTH_TEST_MODE === "dpop")

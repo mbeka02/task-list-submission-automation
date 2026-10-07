@@ -128,7 +128,7 @@ test("dangling credential links are rejected before contacting Lark", () => {
   }
 });
 
-test("login refuses write permissions before requesting consent", () => {
+test("login refuses message-send permissions before requesting consent", () => {
   const f = fixture();
   try {
     const result = f.command("start", {
@@ -359,6 +359,62 @@ test("uncertain explicit renewal blocks a second refresh instead of replaying a 
     });
     expect(readFileSync(f.requests, "utf8")).toBe(before);
     expect(failed.stdout + failed.stderr).not.toContain("canary");
+  } finally {
+    f.close();
+  }
+});
+
+test("explicit user-owned Doc publishing can provision the required Doc scopes without message-send scopes", () => {
+  const f = fixture();
+  const settings = {
+    LARK_DOC_AUTH_STRATEGY: "user_oauth",
+    LARK_OAUTH_SCOPES:
+      "im:message:readonly docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only",
+    OAUTH_TEST_MODE: "doc_scopes",
+  };
+  try {
+    expect(f.command("start", settings).status).toBe(0);
+    const result = f.command("finish", settings);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ready",
+      readerOpenId: "ou_reader",
+    });
+    expect(result.stdout + result.stderr).not.toContain("secret-canary");
+  } finally {
+    f.close();
+  }
+});
+
+test.each([
+  {
+    label: "Doc scopes without opt-in",
+    strategy: "app",
+    scopes: "im:message:readonly docx:document",
+  },
+  {
+    label: "incomplete Doc scopes",
+    strategy: "user_oauth",
+    scopes: "im:message:readonly docx:document",
+  },
+  {
+    label: "message-send scope with Doc opt-in",
+    strategy: "user_oauth",
+    scopes:
+      "im:message:readonly docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only im:message:send_as_user",
+  },
+])("login rejects $label before networking", ({ strategy, scopes }) => {
+  const f = fixture();
+  try {
+    const result = f.command("start", {
+      LARK_DOC_AUTH_STRATEGY: strategy,
+      LARK_OAUTH_SCOPES: scopes,
+    });
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "invalid_configuration",
+    });
+    expect(existsSync(f.requests)).toBe(false);
   } finally {
     f.close();
   }

@@ -15,8 +15,30 @@ if (process.env.WORKER_TEST_HTTP === "true") {
   let title = "",
     revision = 1,
     members = [];
+  let manageCollaborators = "collaborator_can_view";
+  const userDocs = process.env.LARK_DOC_AUTH_STRATEGY === "user_oauth";
+  const owner = {
+    member_type: "openid",
+    member_id: "ou_operator",
+    perm: "full_access",
+  };
+  if (userDocs) members = [owner];
   const blocks = [];
-  function responseFor(method, path, body) {
+  function responseFor(method, path, body, authorization) {
+    if (
+      userDocs &&
+      (path.startsWith("/open-apis/docx/") ||
+        path.startsWith("/open-apis/drive/")) &&
+      authorization !== "Bearer synthetic-reader"
+    )
+      return { code: 1063002 };
+    if (
+      userDocs &&
+      path.endsWith("/members") &&
+      method === "POST" &&
+      body.perm !== "view"
+    )
+      return { code: 1063002 };
     if (path.startsWith("/open-apis/bot/v2/hook/")) {
       const reminder = body?.content?.text?.startsWith(
         "Please post today's task list",
@@ -135,13 +157,23 @@ if (process.env.WORKER_TEST_HTTP === "true") {
           document: { document_id: "docRelease", revision_id: revision, title },
         },
       };
-    if (path.endsWith("/public"))
+    if (path.endsWith("/public")) {
+      if (userDocs && method === "PATCH")
+        manageCollaborators = body.manage_collaborator_entity;
       return {
         code: 0,
-        data: { permission_public: { link_share_entity: "closed" } },
+        data: {
+          permission_public: {
+            link_share_entity: "closed",
+            ...(userDocs
+              ? { manage_collaborator_entity: manageCollaborators }
+              : {}),
+          },
+        },
       };
+    }
     if (path.endsWith("/members")) {
-      if (method === "POST") members = [body];
+      if (method === "POST") members = userDocs ? [owner, body] : [body];
       return { code: 0, data: { items: members, member: members[0] } };
     }
     throw new Error("Unrecognised fixture route");
@@ -155,6 +187,7 @@ if (process.env.WORKER_TEST_HTTP === "true") {
         req.method,
         new URL(req.url, "http://localhost").pathname,
         body,
+        req.headers.authorization,
       );
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(result));

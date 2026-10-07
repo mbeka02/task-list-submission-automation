@@ -39,6 +39,7 @@ async function setup(
     input?: ReturnType<typeof scan>;
     providerBody?: unknown;
     providerStatus?: number;
+    userOwned?: boolean;
   } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), "brief-publishing-"));
@@ -87,21 +88,66 @@ async function setup(
   cleanups.push(provider.close);
   const blocks: unknown[] = [];
   let revision = 1;
-  let members: unknown[] = [];
+  let manageCollaborators = "collaborator_can_view";
+  const owner = {
+    member_type: "openid",
+    member_id: "ou_operator",
+    perm: "full_access",
+  };
+  let members: unknown[] = fixture.userOwned ? [owner] : [];
+  const credentialFile = join(directory, "user-oauth.json");
+  if (fixture.userOwned)
+    writeFileSync(
+      credentialFile,
+      JSON.stringify({
+        version: 1,
+        state: "ready",
+        appId: config.appId,
+        readerOpenId: "ou_operator",
+        accessToken: "synthetic-doc-reader",
+        refreshToken: "synthetic-refresh",
+        expiresAtMs: Date.now() + 86400000,
+        refreshExpiresAtMs: Date.now() + 864000000,
+      }),
+      { mode: 0o600 },
+    );
   const respond = (request: CapturedLarkRequest) => {
+    if (request.path === "/oauth/v3/token")
+      return {
+        body: {
+          access_token: "synthetic-renewed-reader",
+          refresh_token: "synthetic-renewed-refresh",
+          expires_in: 7200,
+          refresh_token_expires_in: 86400,
+          token_type: "Bearer",
+        },
+      };
     if (request.path.includes("tenant_access_token"))
       return {
         body: { code: 0, tenant_access_token: "synthetic-token", expire: 7200 },
       };
-    if (request.path.endsWith("/public"))
+    if (request.path.endsWith("/public")) {
+      if (request.method === "PATCH" && fixture.userOwned)
+        manageCollaborators = (
+          request.body as { manage_collaborator_entity: string }
+        ).manage_collaborator_entity;
       return {
         body: {
           code: 0,
-          data: { permission_public: { link_share_entity: "closed" } },
+          data: {
+            permission_public: {
+              link_share_entity: "closed",
+              ...(fixture.userOwned
+                ? { manage_collaborator_entity: manageCollaborators }
+                : {}),
+            },
+          },
         },
       };
+    }
     if (request.path.endsWith("/members")) {
-      if (request.method === "POST") members = [request.body];
+      if (request.method === "POST")
+        members = fixture.userOwned ? [owner, request.body] : [request.body];
       return {
         body: { code: 0, data: { items: members, member: members[0] } },
       };
@@ -193,6 +239,16 @@ async function setup(
       stagingFolderToken: "folderPrivate",
       documentBaseUrl: "https://synthetic.larksuite.com/docx/",
       httpInstance: lark.httpInstance,
+      ...(fixture.userOwned
+        ? {
+            auth: {
+              strategy: "user_oauth" as const,
+              readerOpenId: "ou_operator",
+              credentialFile,
+            },
+            recipientPermission: "view" as const,
+          }
+        : {}),
     },
     transport: createLarkDeliveryTransport({
       appId: config.appId,
@@ -1192,3 +1248,262 @@ test("admin publication stops if permission readback includes an unexpected addi
     ),
   ).toBe(false);
 });
+
+test("user OAuth owns the Doc while the reports group receives view-only access", async () => {
+  const environment = await setup(undefined, { userOwned: true });
+  const logs = logCapture();
+  environment.coordinator.close();
+  const coordinator = openBriefCoordinator({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  cleanups.push(coordinator.close);
+  expect(
+    await coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).toMatchObject({ status: "published" });
+  const docRequests = environment.lark.requests.filter(
+    (request) =>
+      request.path.startsWith("/open-apis/docx/") ||
+      request.path.startsWith("/open-apis/drive/"),
+  );
+  expect(docRequests.length).toBeGreaterThan(0);
+  expect(
+    docRequests.every(
+      (request) => request.authorization === "Bearer synthetic-doc-reader",
+    ),
+  ).toBe(true);
+  expect(environment.members()).toEqual([
+    { member_type: "openid", member_id: "ou_operator", perm: "full_access" },
+    {
+      member_type: "openchat",
+      member_id: config.destinationChatId,
+      perm: "view",
+      type: "chat",
+    },
+  ]);
+  expect(coordinator.getBrief(environment.briefId)).toMatchObject({
+    documentAuthStrategy: "user_oauth",
+    documentOwnerOpenId: "ou_operator",
+    documentRecipientPermission: "view",
+  });
+  expect(logs.events()).toContainEqual(
+    expect.objectContaining({
+      event: "document_step_completed",
+      stage: "share",
+      documentAuthStrategy: "user_oauth",
+      documentRecipientPermission: "view",
+    }),
+  );
+  for (const value of [
+    "synthetic-doc-reader",
+    "ou_operator",
+    config.destinationChatId,
+    "Draft client drawings.",
+  ])
+    expect(logs.text()).not.toContain(value);
+});
+
+test("recovery cannot broaden the frozen group's permission from view to edit", async () => {
+  const environment = await setup(undefined, { userOwned: true });
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).toMatchObject({ status: "published" });
+  environment.coordinator.close();
+  const before = environment.lark.requests.length;
+  const reopened = openBriefCoordinator({
+    ...environment.options,
+    docPublishing: {
+      ...environment.options.docPublishing,
+      recipientPermission: "edit",
+    },
+  });
+  cleanups.push(reopened.close);
+  expect(
+    await reopened.completeDailyBrief({ briefId: environment.briefId, now }),
+  ).toMatchObject({
+    status: "blocked",
+    reason: "publication_configuration_mismatch",
+  });
+  expect(environment.lark.requests).toHaveLength(before);
+});
+
+test("OAuth renewal crossing the work deadline prevents the next Doc mutation", async () => {
+  let current = now;
+  const deadlineMs = now + 60000;
+  let credentialFile = "";
+  const environment = await setup(
+    (request) => {
+      if (request.path.endsWith("/members") && request.method === "GET") {
+        const grant = JSON.parse(readFileSync(credentialFile, "utf8"));
+        writeFileSync(
+          credentialFile,
+          JSON.stringify({ ...grant, expiresAtMs: Date.now() - 1 }),
+          { mode: 0o600 },
+        );
+      }
+      if (request.path === "/oauth/v3/token") current = deadlineMs;
+      return undefined;
+    },
+    { userOwned: true, clock: () => current },
+  );
+  credentialFile =
+    environment.options.docPublishing.auth?.credentialFile ?? "missing";
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+      deadlineMs,
+    }),
+  ).toMatchObject({ status: "review_required" });
+  expect(
+    environment.lark.requests.some(
+      (request) => request.path === "/oauth/v3/token",
+    ),
+  ).toBe(true);
+  expect(
+    environment.lark.requests.filter(
+      (request) =>
+        request.method === "PATCH" ||
+        request.path.endsWith("/children") ||
+        (request.method === "POST" && request.path.endsWith("/members")),
+    ),
+  ).toHaveLength(0);
+});
+
+test("viewers cannot grant themselves editing rights on a user-owned brief", async () => {
+  const environment = await setup(undefined, { userOwned: true });
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).toMatchObject({ status: "published" });
+  expect(environment.lark.requests).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        method: "PATCH",
+        body: {
+          link_share_entity: "closed",
+          manage_collaborator_entity: "collaborator_full_access",
+        },
+      }),
+    ]),
+  );
+});
+
+test("a user-owned brief cannot write content when the sole owner differs from the approved reader", async () => {
+  const environment = await setup(
+    (request) =>
+      request.path.endsWith("/members") && request.method === "GET"
+        ? {
+            body: {
+              code: 0,
+              data: {
+                items: [
+                  {
+                    member_type: "openid",
+                    member_id: "ou_other",
+                    perm: "full_access",
+                  },
+                ],
+              },
+            },
+          }
+        : undefined,
+    { userOwned: true },
+  );
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).toMatchObject({ status: "review_required" });
+  expect(environment.blocks()).toEqual([]);
+  expect(
+    environment.lark.requests.some(
+      (request) => request.path === "/open-apis/im/v1/messages",
+    ),
+  ).toBe(false);
+});
+
+test("a viewer grant read back as group editing access prevents the link announcement", async () => {
+  const environment = await setup(
+    (request, result) => {
+      if (!request.path.endsWith("/members") || request.method !== "GET")
+        return undefined;
+      const body = result.body as {
+        data: { items: { member_type: string; perm: string }[] };
+      };
+      if (body.data.items.length !== 2) return undefined;
+      return {
+        body: {
+          code: 0,
+          data: {
+            items: body.data.items.map((member) =>
+              member.member_type === "openchat"
+                ? { ...member, perm: "edit" }
+                : member,
+            ),
+          },
+        },
+      };
+    },
+    { userOwned: true },
+  );
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).toMatchObject({ status: "review_required" });
+  expect(
+    environment.lark.requests.some(
+      (request) => request.path === "/open-apis/im/v1/messages",
+    ),
+  ).toBe(false);
+});
+
+test.each(["reader", "strategy"])(
+  "recovery cannot switch the frozen Doc %s",
+  async (change) => {
+    const environment = await setup(undefined, { userOwned: true });
+    expect(
+      await environment.coordinator.completeDailyBrief({
+        briefId: environment.briefId,
+        now,
+      }),
+    ).toMatchObject({ status: "published" });
+    environment.coordinator.close();
+    const before = environment.lark.requests.length;
+    const { auth, ...docOptions } = environment.options.docPublishing;
+    const reopened = openBriefCoordinator({
+      ...environment.options,
+      docPublishing: {
+        ...docOptions,
+        ...(change === "reader"
+          ? {
+              auth: {
+                strategy: "user_oauth",
+                readerOpenId: "ou_other",
+                credentialFile: auth?.credentialFile ?? "missing",
+              },
+            }
+          : {}),
+      },
+    });
+    cleanups.push(reopened.close);
+    expect(
+      await reopened.completeDailyBrief({ briefId: environment.briefId, now }),
+    ).toMatchObject({
+      status: "blocked",
+      reason: "publication_configuration_mismatch",
+    });
+    expect(environment.lark.requests).toHaveLength(before);
+  },
+);

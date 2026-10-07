@@ -88,6 +88,9 @@ function briefConfiguration(inspect: boolean): DueWorkerOptions["brief"] {
       : ["deepseek-flash", "deepseek-v4-pro"].includes(model))
   )
     throw new Error("invalid_worker_configuration");
+  const docAuthStrategy = process.env.LARK_DOC_AUTH_STRATEGY ?? "app";
+  if (!["app", "user_oauth"].includes(docAuthStrategy))
+    throw new Error("invalid_worker_configuration");
   const publication =
     mode === "publish"
       ? {
@@ -112,6 +115,16 @@ function briefConfiguration(inspect: boolean): DueWorkerOptions["brief"] {
             appSecret: inspect ? "status-only" : required("LARK_APP_SECRET"),
             stagingFolderToken: required("LARK_DOC_STAGING_FOLDER_TOKEN"),
             documentBaseUrl: required("LARK_DOCUMENT_BASE_URL"),
+            ...(docAuthStrategy === "user_oauth"
+              ? {
+                  auth: {
+                    strategy: "user_oauth" as const,
+                    readerOpenId: required("LARK_READER_OPEN_ID"),
+                    credentialFile: required("LARK_USER_CREDENTIAL_FILE"),
+                  },
+                  recipientPermission: "view" as const,
+                }
+              : {}),
           },
         }
       : {};
@@ -176,6 +189,8 @@ function openWorker(inspect: boolean, logger: Logger, entryPoint: EntryPoint) {
               : [{ type: "chat_id", id: sourceChatId }],
         });
   if (brief?.docPublishing) {
+    if (brief.docPublishing.auth && recipient.type !== "chat_id")
+      throw new Error("invalid_worker_configuration");
     try {
       openLarkBriefDoc(appId, brief.docPublishing);
     } catch {

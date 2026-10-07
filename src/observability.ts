@@ -211,6 +211,10 @@ const categories = new Set([
   "lark_webhook",
   "lark_app_api",
   "unverified",
+  "app",
+  "user_oauth",
+  "view",
+  "edit",
 ]);
 const numericFields = new Set([
   "durationMs",
@@ -244,6 +248,8 @@ const categoryFields = new Set([
   "mode",
   "stage",
   "adapterKind",
+  "documentAuthStrategy",
+  "documentRecipientPermission",
 ]);
 
 /** Diagnostics can inspect ledger metadata only while an operational sink is attached. */

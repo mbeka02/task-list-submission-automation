@@ -787,7 +787,7 @@ acceptance(
         LARK_APP_SECRET: "synthetic-app-secret",
         LARK_READER_OPEN_ID: "ou_reader",
         LARK_USER_CREDENTIAL_FILE: "/credentials/user-oauth.json",
-        LARK_OAUTH_SCOPES: "im:message.group_msg:get_as_user",
+        LARK_OAUTH_SCOPES: "im:message:readonly",
         OAUTH_TEST_REQUESTS: "/credentials/requests.log",
       }).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
     ];

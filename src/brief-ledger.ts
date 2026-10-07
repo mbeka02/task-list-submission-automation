@@ -8,6 +8,11 @@ import type { BriefEntry, BriefScan } from "./brief-submissions.js";
 import { evaluateBriefObservations } from "./evaluate-submissions.js";
 import type { ReportPolicy } from "./report-ledger.js";
 import {
+  type ReportRecipient,
+  recipientFromKey,
+  scopedRecipientOptions,
+} from "./report-recipient.js";
+import {
   briefEntries,
   dailyBriefs,
   messages,
@@ -19,7 +24,9 @@ export interface BriefLedgerOptions {
   databasePath: string;
   appId: string;
   sourceChatId: string;
-  destinationChatId: string;
+  recipient?: ReportRecipient;
+  /** Legacy group ID; durable user keys also occupy this existing storage column. */
+  destinationChatId?: string;
   policy: ReportPolicy;
   templateVersion: string;
   promptVersion: string;
@@ -70,7 +77,8 @@ function hash(value: unknown) {
 class EvidenceConflict extends Error {}
 
 /** Open the SQLite brief ledger; short immediate transactions freeze input before generation begins. */
-export function openBriefLedger(options: BriefLedgerOptions) {
+export function openBriefLedger(input: BriefLedgerOptions) {
+  const options = scopedRecipientOptions(input);
   const sqlite = new Database(options.databasePath, {
     readonly: options.readOnly ?? false,
     fileMustExist: options.readOnly ?? false,
@@ -109,8 +117,10 @@ export function openBriefLedger(options: BriefLedgerOptions) {
       )
       .get();
     if (!row) return null;
+    const recipient = recipientFromKey(row.destinationChatId);
     return {
       ...row,
+      ...(recipient.type === "open_id" ? { recipient } : {}),
       entries: db
         .select()
         .from(briefEntries)

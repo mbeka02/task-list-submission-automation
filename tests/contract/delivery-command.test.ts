@@ -19,11 +19,16 @@ function seed(
   transport: DeliveryTransport = async () => {
     throw new Error("lost response");
   },
+  recipient?: { type: "chat_id" | "open_id"; id: string },
 ) {
   const directory = mkdtempSync(join(tmpdir(), "task-list-command-"));
   const path = join(directory, "ledger.sqlite");
   const ledger = openReportLedger({
-    ...config,
+    appId: config.appId,
+    sourceChatId: config.sourceChatId,
+    ...(recipient
+      ? { recipient }
+      : { destinationChatId: config.destinationChatId }),
     databasePath: path,
     clock: () => now,
     transport,
@@ -438,6 +443,29 @@ test("an operator cannot reconcile an active claim or a delivery outside the con
     await child.next("result");
   } finally {
     await child.close();
+    fixture.close();
+  }
+});
+
+test("delivery recovery inspects only the configured admin's frozen report", () => {
+  const fixture = seed(undefined, { type: "open_id", id: "ou_admin" });
+  try {
+    const result = command(fixture.path, ["status", "--id", fixture.id], {
+      MANAGEMENT_CHAT_ID: "",
+      REPORT_RECIPIENT_TYPE: "open_id",
+      REPORT_RECIPIENT_ID: "ou_admin",
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      delivery: { id: fixture.id, state: "pending" },
+    });
+    const other = command(fixture.path, ["status", "--id", fixture.id], {
+      MANAGEMENT_CHAT_ID: "",
+      REPORT_RECIPIENT_TYPE: "open_id",
+      REPORT_RECIPIENT_ID: "ou_other",
+    });
+    expect(other.status).toBe(1);
+  } finally {
     fixture.close();
   }
 });

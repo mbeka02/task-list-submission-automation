@@ -34,6 +34,7 @@ async function setup(
     | { body: unknown; status?: number; delayMs?: number; disconnect?: boolean }
     | undefined,
   fixture: {
+    recipient?: { type: "chat_id" | "open_id"; id: string };
     clock?: () => number;
     input?: ReturnType<typeof scan>;
     providerBody?: unknown;
@@ -43,7 +44,14 @@ async function setup(
   const directory = mkdtempSync(join(tmpdir(), "brief-publishing-"));
   cleanups.push(() => rmSync(directory, { recursive: true, force: true }));
   const databasePath = join(directory, "ledger.sqlite");
-  const ledger = openBriefLedger({ ...config, databasePath });
+  const { destinationChatId, ...base } = config;
+  const scope = {
+    ...base,
+    ...(fixture.recipient
+      ? { recipient: fixture.recipient }
+      : { destinationChatId }),
+  };
+  const ledger = openBriefLedger({ ...scope, databasePath });
   const prepared = ledger.prepareDailyBrief({
     businessDate,
     scan: fixture.input ?? scan(),
@@ -170,7 +178,7 @@ async function setup(
   });
   cleanups.push(lark.close);
   const options = {
-    ...config,
+    ...scope,
     databasePath,
     clock: fixture.clock ?? (() => now),
     template: "Today's brief",
@@ -190,6 +198,7 @@ async function setup(
       appId: config.appId,
       appSecret: "synthetic-secret",
       allowedDestinationChatIds: [config.destinationChatId],
+      ...(fixture.recipient ? { allowedRecipients: [fixture.recipient] } : {}),
       httpInstance: lark.httpInstance,
       clock: () => now,
     }),
@@ -1089,4 +1098,97 @@ test("a scheduled work deadline crossed during Doc privacy checks stops content 
         r.path === "/open-apis/im/v1/messages",
     ),
   ).toHaveLength(0);
+});
+
+test("the admin receives editor access and a private brief link, with restart recovery bound to that user", async () => {
+  const environment = await setup(undefined, {
+    recipient: { type: "open_id", id: "ou_admin" },
+  });
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).toMatchObject({ status: "published" });
+  expect(environment.members()).toEqual([
+    {
+      member_type: "openid",
+      member_id: "ou_admin",
+      perm: "edit",
+      type: "user",
+    },
+  ]);
+  expect(
+    environment.lark.requests.find(
+      (r) => r.path === "/open-apis/im/v1/messages",
+    ),
+  ).toMatchObject({
+    query: { receive_id_type: "open_id" },
+    body: { receive_id: "ou_admin" },
+  });
+  const before = environment.lark.requests.length;
+  const restarted = openBriefCoordinator(environment.options);
+  cleanups.push(restarted.close);
+  expect(
+    await restarted.completeDailyBrief({
+      briefId: environment.briefId,
+      now: now + 1000,
+    }),
+  ).toMatchObject({ status: "published" });
+  expect(
+    environment.lark.requests
+      .slice(before)
+      .some(
+        (r) => r.method !== "GET" && !r.path.includes("tenant_access_token"),
+      ),
+  ).toBe(false);
+  const other = openBriefCoordinator({
+    ...environment.options,
+    recipient: { type: "open_id", id: "ou_other" },
+  });
+  cleanups.push(other.close);
+  expect(other.getBrief(environment.briefId)).toBeNull();
+});
+
+test("admin publication stops if permission readback includes an unexpected additional editor", async () => {
+  let shared = false;
+  const environment = await setup(
+    (request, result) => {
+      if (request.path.endsWith("/members") && request.method === "POST")
+        shared = true;
+      if (
+        request.path.endsWith("/members") &&
+        request.method === "GET" &&
+        shared
+      )
+        return {
+          body: {
+            code: 0,
+            data: {
+              items: [
+                { member_type: "openid", member_id: "ou_admin", perm: "edit" },
+                {
+                  member_type: "openid",
+                  member_id: "ou_unexpected",
+                  perm: "edit",
+                },
+              ],
+            },
+          },
+        };
+      return result;
+    },
+    { recipient: { type: "open_id", id: "ou_admin" } },
+  );
+  expect(
+    await environment.coordinator.completeDailyBrief({
+      briefId: environment.briefId,
+      now,
+    }),
+  ).not.toMatchObject({ status: "published" });
+  expect(
+    environment.lark.requests.some(
+      (r) => r.path === "/open-apis/im/v1/messages",
+    ),
+  ).toBe(false);
 });

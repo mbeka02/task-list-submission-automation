@@ -99,7 +99,7 @@ Keep Tailscale off the app container: it belongs on the host and ephemeral deplo
 - [x] Verify `LARK_APP_SECRET` presence without displaying it in `task-list/prv` (also confirmed in dev/stg/prd). Preview does not need a model key; provision that separately for publication. Keep runtime settings in reviewed configuration and never forward the Doppler token into Docker.
 - [x] Install root-owned release tooling/settings and private ledger, credential and backup directories owned by UID/GID 1000. Settings remain paused with preview activation date **8 October 2026**.
 - [x] Install the owner-approved **paused-preview-only** calendar for 7–31 October 2026, listing 10 October (Mazingira) and 20 October (Mashujaa). Additional gazetted holidays were not exhaustively verified; this calendar is not approved for live work. Replace/review it before unpausing and extend coverage before November.
-- [ ] Provision the separate worker OAuth grant and verify initial access and renewal. Do not copy the interactive CLI refresh token or restore an old rotating token.
+- [ ] Complete corrected-scope worker consent and verify initial source access and renewal. The first grant was issued and installed, but the history endpoint rejected it with code `99991679` because `im:message:readonly` was absent. Do not copy the interactive CLI refresh token or restore an old rotating token.
 - [x] Prepare the explicit server Compose definition: pinned image, bridge egress, no ports, read-only root, non-root user, bounded resources/logs and persistent mounts.
 - [x] Validate configuration through deployment preflight/disposable-storage checks without printing expanded configuration or secret values.
 - [x] Verify server-side Doppler fetching with the scoped token and `--no-fallback`, without displaying the secret. The paused preview now uses this path.
@@ -138,7 +138,7 @@ The preview helper and restricted SSH boundary are implemented and tested locall
 - [ ] Reject placeholders/unapproved destinations, missing model credentials and unsafe publishing settings before mutations.
 - [ ] Verify source reader membership, reminder bot eligibility, test destination, native Doc scopes/folder/privacy and editor access.
 - [ ] Prove names report + Doc/link in the development test group through the real deployed entry point, with separately approved content/model data processing.
-- [ ] Confirm management-group ID/access, production data-processing approval, activation dates and reviewed Kenyan holidays.
+- [ ] Confirm private admin open ID, bot availability and Doc editor access, production data-processing approval, activation dates and reviewed Kenyan holidays.
 - [ ] Activate the approved production destination; keep the manual report fallback and document rollback/reconciliation.
 
 **Current blocker:** the worker CLI deliberately rejects `ENABLE_OUTBOUND=true` and `BRIEF_MODE=publish`. The underlying library flow exists, but a deployed preview image cannot send or publish merely by changing environment settings. The demo scripts are not a service entry point.
@@ -153,6 +153,19 @@ The preview helper and restricted SSH boundary are implemented and tested locall
 
 ## Next decisions
 
-The paused preview is running. Separate worker OAuth provisioning, a fully reviewed live calendar, off-server backup policy and the production CLI seam remain open; negative tailnet/identity-policy checks also remain outstanding. The restricted deployment account and positive CI connection are verified. Development-test-group acceptance precedes management activation. Passwords, private keys, grants and service tokens must never be copied into this checklist.
+The paused preview is running. Live OAuth renewal, a fully reviewed live calendar, off-server backup policy and the production CLI seam remain open; negative tailnet/identity-policy checks also remain outstanding. The restricted deployment account and positive CI connection are verified. Development-test-group acceptance precedes admin activation. Passwords, private keys, grants and service tokens must never be copied into this checklist.
 
 See [RUNBOOK.md](RUNBOOK.md) for current commands, frozen-delivery recovery and backup/restore behavior.
+
+### Direct-admin destination update
+
+- [x] Complete fresh worker device consent and verify the configured reader locally; credentials remain private.
+- [x] Resolve one admin contact; keep their identity only in private runtime configuration.
+- [x] Merge worker OAuth PR #21 and install the private grant on the paused server (UID 1000, mode 0600); reviewed image publication remains separate.
+- [x] Verify direct-user addressing, Doc editor permissions and restart recovery with synthetic fixtures: 466 source tests pass; 26 Docker checks passed, and the rebuilt corrected-scope login check also passes.
+- [ ] Configure `REPORT_RECIPIENT_TYPE=open_id` and the private `REPORT_RECIPIENT_ID` through a reviewed destination change; never redirect existing deliveries.
+- [ ] Obtain explicit approval for an admin delivery/access acceptance test before activation.
+
+The admin replaces the former group destination. Development acceptance still uses the private test group, and reminders stay in the source group. No real recipient name or ID belongs in this document.
+
+OAuth live diagnosis: the deployed reader failed, and a one-message API check returned HTTP 400/code `99991679`, explicitly requiring a history/message-read permission. Login now requires `im:message:readonly` before contacting Lark. A fresh corrected-scope consent is pending; no unpause or sends occurred.

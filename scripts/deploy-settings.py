@@ -29,8 +29,8 @@ for name in ("task-list.sqlite", "task-list.sqlite-wal", "task-list.sqlite-shm",
     if path.exists() or path.is_symlink():
         regular_private(path, 1000)
 
-required = {"LARK_APP_ID", "SOURCE_CHAT_ID", "MANAGEMENT_CHAT_ID", "ACTIVATION_DATE", "LARK_READER_OPEN_ID"}
-allowed = required | {"POLICY_VERSION", "LOG_LEVEL", "WORKER_CHECK_INTERVAL_MS", "WORKER_RESTORE_MODE"}
+required = {"LARK_APP_ID", "SOURCE_CHAT_ID", "ACTIVATION_DATE", "LARK_READER_OPEN_ID"}
+allowed = required | {"MANAGEMENT_CHAT_ID", "REPORT_RECIPIENT_TYPE", "REPORT_RECIPIENT_ID", "POLICY_VERSION", "LOG_LEVEL", "WORKER_CHECK_INTERVAL_MS", "WORKER_RESTORE_MODE"}
 fixed = {"APP_MODE": "preview", "ENABLE_OUTBOUND": "false", "ENABLE_DAILY_BRIEF": "false", "BUSINESS_TIMEZONE": "Africa/Nairobi"}
 values = {}
 for line in (root / "worker.env").read_text().splitlines():
@@ -43,3 +43,11 @@ for line in (root / "worker.env").read_text().splitlines():
         assert value == fixed[key]
     values[key] = value
 assert required <= values.keys()
+
+if "REPORT_RECIPIENT_TYPE" in values or "REPORT_RECIPIENT_ID" in values:
+    assert "MANAGEMENT_CHAT_ID" not in values
+    assert values.get("REPORT_RECIPIENT_TYPE") in ("chat_id", "open_id")
+    pattern = r"ou_[A-Za-z0-9_]+" if values["REPORT_RECIPIENT_TYPE"] == "open_id" else r"oc_[A-Za-z0-9_]+"
+    assert re.fullmatch(pattern, values.get("REPORT_RECIPIENT_ID", ""))
+else:
+    assert re.fullmatch(r"oc_[A-Za-z0-9_]+", values.get("MANAGEMENT_CHAT_ID", ""))

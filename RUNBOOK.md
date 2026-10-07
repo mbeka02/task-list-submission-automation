@@ -1,7 +1,8 @@
 # Local release and operator guide
 
-This release is for isolated acceptance and preview. The server is currently down,
-management access is pending, and `oc_management_placeholder` is a local placeholder.
+This release is for isolated acceptance and preview. The server runs a paused
+preview. Production reports and brief links will go directly to the privately
+configured admin; development acceptance continues to use the test group.
 The worker CLI rejects outbound activation. No production deployment or live send
 is authorized by the local release tests.
 
@@ -73,8 +74,8 @@ real subprocesses, and competing load can exhaust startup-test deadlines.
 ## Configure an isolated preview
 
 Copy `.env.example` to an ignored `.env` with permissions 0600. Keep
-`APP_MODE=preview`, `ENABLE_OUTBOUND=false` and use isolated storage. Management's
-real chat ID must replace the placeholder only when access is verified. Fixture
+`APP_MODE=preview`, `ENABLE_OUTBOUND=false` and use isolated storage. The admin's
+recipient is a user open ID, kept only in private configuration. Verify bot availability and Doc editor access before activation. Fixture
 calendar dates and synthetic grants from tests are not production configuration.
 
 For the Compose package, an authorized local operator must prepare:
@@ -151,7 +152,7 @@ Expired work is surfaced the next day instead of automatically publishing late.
 Restore pauses capture, generation, Doc changes and announcements.
 
 Before activation, establish worker credentials, approved data processing, private
-folder ownership/permissions, management editor access and an authorized private
+folder ownership/permissions, admin editor access and an authorized private
 live appearance/access test. The bot needs native Doc create/read/write access,
 `drive:drive:readonly` for access checks, `docs:permission.setting:write_only`
 to close a new Doc's tenant-readable default, and
@@ -194,7 +195,7 @@ remain authoritative.
 
 | Symptom | First check | Next action |
 | --- | --- | --- |
-| Report blocked | `history_read_completed` reason/code and `report_preparation_blocked` reasons | Check reader authorization, calendar or ambiguous candidates; consult Anthony/Joseh for source/name review |
+| Report blocked | `history_read_completed` reason/code and `report_preparation_blocked` reasons | Check reader authorization, calendar or ambiguous candidates; consult the operator/admin for source/name review |
 | AI fallback | `model_attempt_completed` reason/classification, attempt and retry delay | Check quota/access/model configuration; preserve frozen input and the bounded retry policy |
 | Publication needs review | `document_step_failed` stage and `brief_completed` reason | Verify bot scopes and private Doc/access state; do not create a replacement or overwrite edits |
 | Delivery uncertain/failed | `delivery_completed` reason, attempt and opaque delivery ID | Follow the reviewed delivery procedure below; compare with Lark evidence before reconciliation |
@@ -230,7 +231,7 @@ read/preparation failure; a separate status command cannot recover transient rea
 diagnostics from a past process. Missing/invalid calendar, credentials or storage
 must not be treated as a valid zero-submission day.
 
-On ambiguous content/name, confirm the source message and sender with Anthony/Joseh.
+On ambiguous content/name, confirm the source message and sender with the operator/admin.
 Fix the source or approved alias/policy through a reviewed change, then rerun an
 unfrozen date. Names are display data; different scoped IDs are distinct people.
 The full-minute cutoff uses policy `task-list-v2`; select that version in existing
@@ -324,7 +325,7 @@ replay an uncertain refresh request. Use the [worker login commands](#provision-
 Keep the deployed worker paused. This operator command requests a fresh user grant under the configured app; it does not import, rotate or read the interactive CLI's credentials. Provider-side independence of simultaneous grants still needs live verification.
 
 1. Set `LARK_APP_ID`, `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` and `LARK_OAUTH_SCOPES`. Obtain the app secret through the scoped Doppler config; never paste it into an argument or log. Use a dedicated credential directory, owned by the invoking user, mode 0700. The eventual container directory/file must be owned by UID/GID 1000.
-2. Request only enabled user read permissions required for the reader and identity check. The command allows `im:message.group_msg:get_as_user`, `im:message:readonly`, `im:chat:read`, `contact:user.base:readonly` and `offline_access`; at least one message-read scope is required. It adds `offline_access` for renewal. Confirm the app's enabled scopes and availability before live consent; the allowlist is not proof of permission.
+2. Request only enabled user read permissions required for the reader and identity check. The command allows `im:message.group_msg:get_as_user`, `im:message:readonly`, `im:chat:read`, `contact:user.base:readonly` and `offline_access`; `im:message:readonly` is required for the history endpoint; group-message access alone is insufficient. It adds `offline_access` for renewal. Confirm the app's enabled scopes and availability before live consent; the allowlist is not proof of permission.
 3. Run `pnpm worker-auth start`. Open the returned verification URL and approve as the configured reader before the stated expiry. Output contains only the URL, user code and expiry; the device code stays in a private `.login.json` file beside the credentials.
 4. Run `pnpm worker-auth finish`. It honors provider pending/slow-down intervals, verifies the returned user's open ID, and atomically creates a mode-0600 Bearer grant in the existing worker schema. The built-image equivalent is `node dist/worker-auth-command.js start|finish`. Neither command unpauses the worker or sends anything.
 
@@ -336,8 +337,8 @@ Protocol references: [official device flow](https://github.com/larksuite/cli/blo
 
 ## Deferred live acceptance
 
-When the server returns, identify the deployment/backup/calendar operators; verify
-management access, external-group reminder eligibility, worker OAuth provisioning
+Before activation, identify the deployment/backup/calendar operators; verify
+admin access, external-group reminder eligibility, worker OAuth provisioning
 and real SDK renewal. Agree evidence retention/access and alert recipients. Compare
 bounded preview days with the admin's manual list and explain every discrepancy. The
 comparison period and acceptable results require agreement; local fixtures do not
@@ -347,7 +348,7 @@ For the optional brief, separately authorize a small synthetic live model sample
 and a private Doc test with exact app identity, recipient/folder and content.
 Verify every selected person, faithful work summaries, late labels and source-backed
 notes; record model/prompt/template/schema versions, actual billable usage and
-failure observations. Then verify native layout, management editor access, saved
+failure observations. Then verify native layout, admin editor access, saved
 link delivery and preservation of human edits. Approve data processing before
 using employee tasks; the current Gemini free-tier demo remains synthetic only.
 A fixture-passing model is not yet proven cost-effective or factually reliable.
@@ -360,3 +361,13 @@ The current local CLI still rejects `ENABLE_OUTBOUND=true`.
 
 Backup and Compose behavior follow the [SQLite backup documentation](https://www.sqlite.org/backup.html)
 and [Docker Compose service reference](https://docs.docker.com/reference/compose-file/services/).
+
+## Configure the admin recipient
+
+Set `REPORT_RECIPIENT_TYPE=open_id` and a privately resolved `REPORT_RECIPIENT_ID` from the approved app's contact lookup. Do not put the person's name or actual ID in tracked files. For development, select `chat_id` with the existing test group. Reminders still target the source group. Supply both new settings and remove a legacy destination setting; partial or conflicting configuration is rejected.
+
+Live activation requires proving app-bot availability to the admin and native Doc editor access. A direct-user message acknowledgment contains the bot/user conversation ID, not the user's open ID. The transport validates the approved request scope and a nonempty message/conversation acknowledgment; group delivery additionally verifies the exact chat ID. Unknown outcomes retain existing durable reconciliation rules.
+
+The deployment helper refuses changing an existing worker's recipient during an ordinary image upgrade. Stop the paused worker and review the scope transition separately; preserve the ledger, backups and old scoped jobs. Never change a stored frozen destination or restore stale data to redirect a delivery. No admin send or permission change is authorized by local acceptance.
+
+Live setup diagnosis on 7 October: the first grant issued successfully, but Lark rejected history with HTTP 400/code `99991679`. Request `im:message:readonly` in fresh consent; `im:message.group_msg:get_as_user` alone does not authorize history. The login command now rejects that insufficient configuration before networking. The server remains paused until corrected access and renewal are verified.

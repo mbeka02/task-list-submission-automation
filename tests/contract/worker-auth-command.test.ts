@@ -43,7 +43,7 @@ function fixture() {
             LARK_APP_SECRET: "app-secret-canary",
             LARK_READER_OPEN_ID: "ou_reader",
             LARK_USER_CREDENTIAL_FILE: credentialFile,
-            LARK_OAUTH_SCOPES: "im:message.group_msg:get_as_user",
+            LARK_OAUTH_SCOPES: "im:message:readonly",
             OAUTH_TEST_REQUESTS: requests,
             ...extra,
           },
@@ -292,6 +292,23 @@ test("invalid logging configuration returns a safe command failure", () => {
       reason: "invalid_log_level",
     });
     expect(result.stdout + result.stderr).not.toContain("secret-canary");
+    expect(existsSync(f.requests)).toBe(false);
+  } finally {
+    f.close();
+  }
+});
+
+test("login refuses group-message access without the permission required by the history endpoint", () => {
+  const f = fixture();
+  try {
+    const result = f.command("start", {
+      LARK_OAUTH_SCOPES: "im:message.group_msg:get_as_user",
+    });
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "blocked",
+      reason: "invalid_configuration",
+    });
     expect(existsSync(f.requests)).toBe(false);
   } finally {
     f.close();

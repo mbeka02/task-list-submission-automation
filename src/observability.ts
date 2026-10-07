@@ -38,6 +38,8 @@ const reasons = new Set([
   "missing_worker_configuration",
   "invalid_calendar_file",
   "invalid_worker_configuration",
+  "invalid_report_recipient",
+  "ambiguous_report_recipient",
   "outbound_requires_activation",
   "brief_publishing_requires_activation",
   "rate_limited",

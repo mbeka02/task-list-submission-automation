@@ -15,6 +15,11 @@ import {
   withObservedRun,
 } from "./observability.js";
 import {
+  type ReportRecipient,
+  recipientFromKey,
+  scopedRecipientOptions,
+} from "./report-recipient.js";
+import {
   dailyBriefs,
   deliveries,
   type EvidenceObservation,
@@ -96,7 +101,9 @@ export interface LedgerOptions extends ObservabilityOptions {
   readOnly?: boolean;
   appId: string;
   sourceChatId: string;
-  destinationChatId: string;
+  /** Prefer a typed recipient; legacy group callers may still supply destinationChatId. */
+  recipient?: ReportRecipient;
+  destinationChatId?: string;
   transport?: DeliveryTransport;
   clock?: () => number;
   newSendUuid?: () => string;
@@ -129,7 +136,8 @@ class EvidenceConflict extends Error {}
  * Open an app/group-scoped ledger and apply migrations unless inspection is read-only.
  * Returned operations freeze reports, inspect state, attempt delivery or record reviewed recovery.
  */
-export function openReportLedger(options: LedgerOptions) {
+export function openReportLedger(input: LedgerOptions) {
+  const options = scopedRecipientOptions(input);
   const sqlite = new Database(options.databasePath, {
     readonly: options.readOnly ?? false,
     fileMustExist: options.readOnly ?? false,
@@ -164,9 +172,11 @@ export function openReportLedger(options: LedgerOptions) {
         ),
       )
       .get();
+    const recipient = row ? recipientFromKey(row.destinationChatId) : null;
     return row
       ? {
           ...row,
+          ...(recipient?.type === "open_id" ? { recipient } : {}),
           entries: db
             .select()
             .from(reportEntries)

@@ -8,6 +8,7 @@ import {
   withTenantToken,
 } from "@larksuiteoapi/node-sdk";
 import type { BriefContent } from "./brief-content.js";
+import { recipientFromKey } from "./report-recipient.js";
 
 /** App-owned native Docs, staged privately in an explicitly selected folder. */
 export interface BriefDocOptions {
@@ -351,7 +352,10 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         throw new Error("Doc changed during verification");
       return revision as number;
     },
-    async share(id: string, chatId: string, guard: () => void) {
+    async share(id: string, destinationKey: string, guard: () => void) {
+      const recipient = recipientFromKey(destinationKey);
+      const memberType = recipient.type === "open_id" ? "openid" : "openchat";
+      const memberId = recipient.id;
       const list = () =>
         client.drive.permissionMember.list(
           { path: { token: id }, params: { type: "docx" } },
@@ -364,8 +368,8 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         existing.data.items.some(
           (member) =>
             !(
-              member.member_type === "openchat" &&
-              member.member_id === chatId &&
+              member.member_type === memberType &&
+              member.member_id === memberId &&
               ["view", "edit"].includes(member.perm)
             ) &&
             !(
@@ -388,8 +392,8 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
         throw new Error("Public Doc access unverified");
       const granted = existing.data.items.some(
         (member) =>
-          member.member_type === "openchat" &&
-          member.member_id === chatId &&
+          member.member_type === memberType &&
+          member.member_id === memberId &&
           member.perm === "edit",
       );
       if (!granted) {
@@ -399,10 +403,10 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
             path: { token: id },
             params: { type: "docx", need_notification: false },
             data: {
-              member_type: "openchat",
-              member_id: chatId,
+              member_type: memberType,
+              member_id: memberId,
               perm: "edit",
-              type: "chat",
+              type: recipient.type === "open_id" ? "user" : "chat",
             },
           },
           withTenantToken(token),
@@ -412,10 +416,25 @@ export function openLarkBriefDoc(appId: string, options: BriefDocOptions) {
       const members = await list();
       if (
         members.code !== 0 ||
-        !members.data?.items?.some(
+        !members.data?.items ||
+        members.data.items.some(
           (member) =>
-            member.member_type === "openchat" &&
-            member.member_id === chatId &&
+            !(
+              member.member_type === memberType &&
+              member.member_id === memberId &&
+              ["view", "edit"].includes(member.perm)
+            ) &&
+            !(
+              member.perm === "full_access" &&
+              ["openid", "userid", "appid"].includes(member.member_type)
+            ),
+        ) ||
+        members.data.items.filter((member) => member.perm === "full_access")
+          .length > 1 ||
+        !members.data.items.some(
+          (member) =>
+            member.member_type === memberType &&
+            member.member_id === memberId &&
             member.perm === "edit",
         )
       )

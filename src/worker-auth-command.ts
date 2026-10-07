@@ -305,11 +305,7 @@ async function main() {
   ]);
   if (
     scopes.some((scope) => !allowedScopes.has(scope)) ||
-    !scopes.some(
-      (scope) =>
-        scope === "im:message:readonly" ||
-        scope === "im:message.group_msg:get_as_user",
-    )
+    !scopes.includes("im:message:readonly")
   )
     throw new LoginError("invalid_configuration");
   privateDirectory(file);

@@ -7,7 +7,7 @@ This checklist covers deployment and debugging; no production activation has occ
 
 Use one Docker Compose worker, local persistent SQLite and Doppler-managed app/model secrets. Docker owns worker restarts; no reverse proxy or inbound application port is needed. GitHub-hosted runners build/test the image; Tailscale supplies the private deployment connection.
 
-Read-only server inspection confirmed Ubuntu 26.04 LTS, x86_64, Docker 29.7.2, Compose 5.5.0, synchronized host time, Docker enabled at boot, UFW enabled with LAN SSH access, and an online Tailscale client. There is ample local disk/RAM for this worker. HTTPS endpoints for GHCR, Doppler and Lark respond; credentials and API permissions are still separate checks. Doppler CLI was not found on the server. No existing service or firewall setting was changed.
+Read-only server inspection confirmed Ubuntu 26.04 LTS, x86_64, Docker 29.7.2, Compose 5.5.0, synchronized host time, Docker enabled at boot, UFW enabled with LAN SSH access, and an online Tailscale client. There is ample local disk/RAM for this worker. HTTPS endpoints for GHCR, Doppler and Lark respond; credentials and API permissions are still separate checks. Doppler CLI was initially absent and is now installed. The restricted deployment account, root-owned helper, private persistent paths and SSH policy are now installed. Existing administrator logins and shared applications were preserved; the firewall was unchanged.
 
 The repository is public. Keep ordinary PR checks on GitHub-hosted runners; do not give PR jobs a production-server runner, Docker socket, deployment identity or real task data. Password SSH is sufficient for today's inspection, but automation should use a restricted deployment identity rather than the administrator's password.
 
@@ -67,14 +67,17 @@ The workflows are initial infrastructure, not an activation mechanism. Ordinary 
 
 - [x] Confirm the server is already enrolled and healthy in Tailscale.
 - [x] Confirm the user has tailnet admin access.
-- [ ] Select a tagged server identity and a distinct ephemeral CI tag; grant the CI identity access only to this server's deployment SSH port.
+- [x] Confirm the server now carries `tag:task-list-server` and administrator SSH still works through Tailscale.
+- [ ] Verify the effective CI grant excludes unrelated devices/ports during the first runner check; tags/grants were configured by the tailnet administrator.
 - [ ] Configure Tailscale workload identity federation for this repository/environment, or a scoped OAuth client if federation is unavailable. Record the exact branch/workflow restrictions.
 - [x] Configure GitHub `preview` with a required `mbeka02` review, a main-only branch rule and non-cancelling deployment concurrency. Save `DEPLOY_HOST`, `TS_CLIENT_ID` and `TS_AUDIENCE` as environment variables.
-- [ ] Narrow the supplied OIDC credential to Auth Keys Write and `tag:task-list-ci`; verify subject/custom claims and network grants before using it.
-- [ ] Provision a dedicated SSH deployment key/account or approved Tailscale SSH policy. Use pinned server host keys for ordinary SSH; no `StrictHostKeyChecking=no` and no administrator password in GitHub secrets.
-- [ ] Restrict the account to the reviewed deployment helper. Docker group membership is effectively host-root access; it is not a restricted deployment role.
-- [ ] Confirm UFW permits only the intended Tailscale path as needed, preserving LAN SSH and every existing service rule. Tailnet grants and host firewall rules are separate checks.
-- [ ] Prove runner → server connectivity with a harmless read-only command before any deployment.
+- [x] Tailnet administrator reports completing the narrowed credential, tag and access-rule setup.
+- [ ] Prove OIDC subject/custom claims with the first reviewed, check-only workflow run; Client ID and Audience alone do not verify those restrictions.
+- [x] Install the dedicated `task-list-deploy` account/key; keep its private key and verified host key only in GitHub `preview` secrets. Administrator passwords are not in Actions.
+- [x] Verify effective SSH settings, host sudoers and real account behavior: check succeeds; shell/injection/mutable-tag/forwarding/unrelated-sudo attempts are denied. No Docker group membership.
+- [x] Confirm the existing UFW SSH rule on `tailscale0`; preserve LAN SSH and all existing service rules. Tailnet grants remain a separate restriction.
+- [x] Add a default **check-only** workflow mode using the approved SSH `check` command; no digest or worker replacement is needed.
+- [ ] Run it from reviewed main and prove GitHub runner → server connectivity before deployment.
 
 Keep Tailscale off the app container: it belongs on the host and ephemeral deploy runner. Tailnet administrator setup is still required even though the server is already online. No subnet router, router port forward or public SSH endpoint is planned.
 
@@ -82,13 +85,14 @@ Keep Tailscale off the app container: it belongs on the host and ephemeral deplo
 
 - [x] Install Doppler CLI 3.76.6 on the server through the official signed APT repository and verify its version.
 - [x] Authenticate in workspace **mbeka02**, create project **task-list**, and create Preview **`prv`**. This repository selects `task-list/prv`; `prd` has a secret but no production deployment is active.
-- [ ] Create a read-only `prv` service token and install it privately on the server; provision production separately.
+- [x] Install the read-only `prv` service token privately on the server and verify its secret fetch. Preview token expires **6 November 2026**; rotate before expiry. Production remains separate.
 - [x] Verify `LARK_APP_SECRET` presence without displaying it in `task-list/prv` (also confirmed in dev/stg/prd). Preview does not need a model key; provision that separately for publication. Keep runtime settings in reviewed configuration and never forward the Doppler token into Docker.
-- [ ] Prepare private ledger, credential and backup directories, owned by the tested container UID/GID, plus the reviewed calendar file.
+- [x] Install root-owned release tooling/settings and private ledger, credential and backup directories owned by UID/GID 1000. Settings are paused with a future activation date.
+- [ ] Supply the reviewed holiday calendar and choose a matching preview activation date; no calendar file has been invented.
 - [ ] Provision the separate worker OAuth grant and verify initial access and renewal. Do not copy the interactive CLI refresh token or restore an old rotating token.
 - [x] Prepare the explicit server Compose definition: pinned image, bridge egress, no ports, read-only root, non-root user, bounded resources/logs and persistent mounts.
 - [ ] Validate configuration quietly; do not print expanded configuration or secret values.
-- [ ] Fetch Doppler secrets before changing a running worker; keep `--no-fallback` initially. Existing containers can restart without contacting Doppler.
+- [x] Verify server-side Doppler fetching with the scoped token and `--no-fallback`, without displaying the secret. No worker has been started.
 
 The reviewed host paths, setup commands and GitHub/Tailscale settings are in [deploy/README.md](deploy/README.md). Deploy secrets stay on the host; GitHub only needs its deployment identity and target image reference.
 
@@ -102,7 +106,7 @@ The reviewed host paths, setup commands and GitHub/Tailscale settings are in [de
 - [x] Wire a main-only manual deploy workflow to that tested helper over Tailscale. Deploy by digest; do not accept arbitrary shell commands or image repositories from inputs.
 - [x] Emit safe structured host audit events with run ID, digest, actor UID, duration and outcome; return the backup reference in result JSON. GitHub records the initiating actor and reviewed commit/digest.
 
-The preview helper and restricted SSH boundary are implemented and tested locally. Bash/Node syntax, Python execution and the sudoers template pass; actual host installation, effective SSH settings and hosted deployment remain pending.
+The preview helper and restricted SSH boundary are implemented and tested locally. Bash/Node syntax, Python execution and the sudoers template pass; host installation and effective SSH settings are verified. Hosted connectivity, image publication and worker deployment remain pending. The server's sudo-rs rejected the legacy argument wildcard; the fixed-executable rule passed host validation, with exact arguments enforced by the wrapper/helper. Its existing `AllowUsers` list was extended without removing existing users.
 
 ### 6. Deploy preview and debug the actual server entry point
 
@@ -136,6 +140,6 @@ The preview helper and restricted SSH boundary are implemented and tested locall
 
 ## Next decisions
 
-The off-server backup location, tailnet CI identity/policy and production CLI seam remain open. The restricted deployment account is approved and tested, but still needs host installation. The default recommendation is development-test-group acceptance before management activation. Passwords, private keys, grants and service tokens must never be copied into this checklist.
+The off-server backup location, tailnet CI identity/policy and production CLI seam remain open. The restricted deployment account is installed and tested. Reviewed-calendar and separate worker OAuth provisioning are still required before worker activation. The default recommendation is development-test-group acceptance before management activation. Passwords, private keys, grants and service tokens must never be copied into this checklist.
 
 See [RUNBOOK.md](RUNBOOK.md) for current commands, frozen-delivery recovery and backup/restore behavior.

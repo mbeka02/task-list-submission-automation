@@ -3,9 +3,15 @@ name: Deploy preview
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: Check connectivity first; deploy replaces the preview worker
+        required: true
+        type: choice
+        default: check
+        options: [check, deploy]
       digest:
         description: SHA-256 digest from the successful Publish image run (sha256:...)
-        required: true
+        required: false
         type: string
 
 permissions:
@@ -25,12 +31,16 @@ jobs:
     steps:
       - name: Validate the approved image and target
         env:
+          OPERATION: ${{ inputs.operation }}
           DIGEST: ${{ inputs.digest }}
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
         run: |
-          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 2
+          [[ "$OPERATION" == check || "$OPERATION" == deploy ]] || exit 2
+          if [[ "$OPERATION" == deploy ]]; then
+            [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 2
+            printf 'DEPLOY_IMAGE=ghcr.io/mbeka02/task-list-submission-automation@%s\n' "$DIGEST" >> "$GITHUB_ENV"
+          fi
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+$ ]] || exit 2
-          printf 'DEPLOY_IMAGE=ghcr.io/mbeka02/task-list-submission-automation@%s\n' "$DIGEST" >> "$GITHUB_ENV"
 
       - name: Join the restricted deployment tailnet
         uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
@@ -39,9 +49,10 @@ jobs:
           audience: ${{ vars.TS_AUDIENCE }}
           tags: tag:task-list-ci
 
-      - name: Deploy the digest through the restricted SSH command
+      - name: Check connectivity and optionally deploy the approved digest
         env:
           DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          OPERATION: ${{ inputs.operation }}
           PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
@@ -51,8 +62,13 @@ jobs:
           trap 'rm -f "$key" "$hosts"' EXIT
           printf '%s\n' "$PRIVATE_KEY" > "$key"
           printf '%s\n' "$KNOWN_HOSTS" > "$hosts"
-          ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts" \
-            -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
-            "task-list-deploy@$DEPLOY_HOST" "deploy --image $DEPLOY_IMAGE"
-          printf 'Preview deployment requested by %s: `%s`\n' "$GITHUB_ACTOR" "$DEPLOY_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          ssh_options=(-i "$key" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$hosts"
+            -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3)
+          ssh "${ssh_options[@]}" "task-list-deploy@$DEPLOY_HOST" check
+          if [[ "$OPERATION" == check ]]; then
+            printf 'Preview SSH connectivity verified by %s; no worker replacement.\n' "$GITHUB_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+          else
+            ssh "${ssh_options[@]}" "task-list-deploy@$DEPLOY_HOST" "deploy --image $DEPLOY_IMAGE"
+            printf 'Preview deployment requested by %s: `%s`\n' "$GITHUB_ACTOR" "$DEPLOY_IMAGE" >> "$GITHUB_STEP_SUMMARY"
+          fi

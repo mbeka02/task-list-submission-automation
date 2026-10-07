@@ -1,8 +1,8 @@
 # DB Studio task-list automation
 
-A TypeScript worker that identifies who posted a daily task list in Lark and prepares a management report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
+A TypeScript worker that identifies who posted a daily task list in Lark and prepares an admin report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
 
-**Release status:** the optional brief implementation and local release acceptance are complete. Gemini and DeepSeek pass the same offline container publication/recovery drill; live quality and native Lark appearance/access are still unverified. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. Production access, worker OAuth provisioning, live acceptance and deployment remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
+**Release status:** the optional brief implementation and local release acceptance are complete. Gemini and DeepSeek pass the same offline container publication/recovery drill; live quality and native Lark appearance/access are still unverified. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. A paused server preview and fresh worker OAuth grant are in place; live renewal, admin access acceptance and production activation remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
 
 ## Table of contents
 
@@ -17,6 +17,7 @@ A TypeScript worker that identifies who posted a daily task list in Lark and pre
   - [Constraints and durability](#constraints-and-durability)
 - [Tech stack](#tech-stack)
 - [Installation and setup](#installation-and-setup)
+  - [Server deployment and CI/CD](#server-deployment-and-cicd)
 - [Usage and operations](#usage-and-operations)
 - [Observability](#observability)
 - [Development and verification](#development-and-verification)
@@ -24,13 +25,13 @@ A TypeScript worker that identifies who posted a daily task list in Lark and pre
 
 ## Project overview
 
-The workflow replaces manually checking **DB STUDIO EXTERNAL** and compiling the names of people who submitted their task lists. The management report contains a dated, numbered list of distinct submitters; it does not summarise their tasks or determine who failed to submit from an employee roster.
+The workflow replaces manually checking **DB STUDIO EXTERNAL** and compiling the names of people who submitted their task lists. The admin report contains a dated, numbered list of distinct submitters; it does not summarise their tasks or determine who failed to submit from an employee roster.
 
 | When, in `Africa/Nairobi` (UTC+3) | Work |
 | --- | --- |
 | Monday–Friday, excluding reviewed Kenyan public holidays | Eligible working days |
 | 09:30 to just before 10:00 | Prepare the reminder for the source group; allow same-day catch-up |
-| At or after 10:01 | Read that day's messages originally sent from midnight through **10:00:59.999 inclusive** (before 10:01), then freeze the management report |
+| At or after 10:01 | Read that day's messages originally sent from midnight through **10:00:59.999 inclusive** (before 10:01), then freeze the admin report |
 | At or after 10:15, when enabled | Freeze a separate brief capture of sends before 10:15; label sends from 10:01 as late |
 | Startup and after each completed check | Recover today's unfinished work; default delay is 60 seconds |
 
@@ -51,7 +52,7 @@ One Node.js worker coordinates the workflow and stores its ledger in a dedicated
 ```mermaid
 %%{init: {"theme":"base","fontFamily":"sans-serif","themeVariables":{"fontFamily":"sans-serif","fontSize":"15px","lineColor":"#64748b","primaryTextColor":"#0f172a","edgeLabelBackground":"#f8fafc"},"flowchart":{"curve":"linear","nodeSpacing":40,"rankSpacing":45}}}%%
 flowchart TB
-    CONFIG["Reviewed configuration<br/>App / groups / calendar / policy"]:::config
+    CONFIG["Reviewed configuration<br/>App / source / recipient / calendar / policy"]:::config
     SCHEDULE["Due-work scheduler<br/>Startup + periodic checks"]:::worker
     SOURCE["Lark source group<br/>DB STUDIO EXTERNAL"]:::lark
     READER["Paginated history reader<br/>Approved account · user OAuth"]:::worker
@@ -60,7 +61,7 @@ flowchart TB
     LEDGER[("SQLite ledger<br/>Evidence · reports · delivery state")]:::storage
     DELIVERY["Delivery coordinator<br/>Claims · retries · reconciliation"]:::worker
     BOT["Lark app-bot adapter<br/>Available; CLI sending disabled"]:::outbound
-    TARGETS["Lark destinations<br/>Source: reminder · Management: report"]:::lark
+    TARGETS["Lark destinations<br/>Source: reminder · Admin: report"]:::lark
 
     CONFIG --> SCHEDULE
     SCHEDULE -->|10:01 report due| READER
@@ -80,7 +81,7 @@ flowchart TB
     classDef outbound fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px;
 ```
 
-**Legend:** blue = Lark groups; green = worker modules; purple = persistent storage; amber = configuration; orange = outbound adapter. Dashed arrows require future activation. The coordinator records outcomes back into SQLite; that return path is omitted to keep the diagram readable.
+**Legend:** blue = Lark resources and recipients; green = worker modules; purple = persistent storage; amber = configuration; orange = outbound adapter. Dashed arrows require future activation. The coordinator records outcomes back into SQLite; that return path is omitted to keep the diagram readable.
 
 **Optional AI brief — scheduled capture and opt-in library publication**
 
@@ -98,7 +99,7 @@ flowchart TB
     VALIDATE["Shared draft validation<br/>Reference coverage · limits · safe failures"]:::worker
     DOC["Private native Lark Doc<br/>Write · verify content · verify editor access"]:::lark
     LINK["Saved Doc link + existing delivery ledger<br/>Claims · stable UUID · acknowledgement"]:::worker
-    MANAGEMENT["MANAGEMENT GROUP<br/>Brief supplements the names report"]:::lark
+    ADMIN["Admin<br/>Brief supplements the names report"]:::lark
 
     SCHEDULE_AI --> CAPTURE
     SOURCE_AI --> CAPTURE
@@ -111,7 +112,7 @@ flowchart TB
     DEEPSEEK --> VALIDATE
     VALIDATE --> DOC
     DOC --> LINK
-    LINK --> MANAGEMENT
+    LINK --> ADMIN
 
     classDef lark fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px;
     classDef worker fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
@@ -123,6 +124,11 @@ flowchart TB
 **Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The scheduler freezes brief input once at/after 10:15. CLI opt-in ends at that capture; the dashed edge requires library publish configuration and separate activation. Core failures do not suppress brief reads, and brief failures do not suppress core work. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
 
 History reads use the approved user's access because the source is an external group. Sending uses the approved app bot and explicit destination scope. Both stay bound to the same app ID; neither falls back to another account or group.
+
+Production names reports and brief links target the **admin directly**. Configure `REPORT_RECIPIENT_TYPE=open_id` and keep `REPORT_RECIPIENT_ID` private. Development acceptance uses `chat_id` with the test-group ID; reminders always target the source group. The message adapter uses the matching address type, and Doc publication verifies editor access for that same user or group before announcing its link.
+
+The existing `destinationChatId` storage column holds a durable recipient scope: old group IDs stay unchanged; new user keys encode `open_id` plus the ID. Report/brief uniqueness and recovery remain bound to that key. Changing recipients never redirects frozen jobs. Existing group-only configuration remains supported for release compatibility, but new configuration must supply exactly one recipient and cannot conflict with a legacy destination.
+
 
 ### How the workflow runs
 
@@ -365,12 +371,12 @@ Without `docPublishing`, `ready` returns an in-memory handoff and performs no Do
 
 ### Editable Doc publication
 
-Configure `docPublishing` with the approved app secret, private `stagingFolderToken` and tenant `documentBaseUrl` ending in `/docx/`; inject the existing scoped app-bot `transport` for announcements. Source reads continue using user OAuth. Production folder authorization, app membership in management and a private live appearance/access check remain deployment gates.
+Configure `docPublishing` with the approved app secret, private `stagingFolderToken` and tenant `documentBaseUrl` ending in `/docx/`; inject the existing scoped app-bot `transport` for announcements. Source reads continue using user OAuth. Production folder authorization, app availability to the admin and a private live appearance/access check remain deployment gates.
 
 1. Persist a fenced publication claim and canonical content hash, then create a Doc in the selected staging folder. Save its acknowledged URL before writing.
 2. Require closed link access and restricted collaborators before sending content. A new Doc's tenant-readable default is closed only when this app is its sole verified owner; read back settings and collaborators before writing. The bot needs `docs:permission.setting:write_only` for that change. Write native headings and bullets in batches of at most 50 blocks, recording each operation token beforehand. Names are bold, late posts are labelled, the heading uses a blue accent, and the closing note is muted and italic. Omit empty Notes.
 3. Read every block page at a pinned revision. Verify the hierarchy, order, text and formatting against the canonical hash, ignoring benign server defaults. Confirm the revision stayed unchanged.
-4. Establish and read back management-group **edit** access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and stable-UUID retries. Without a transport, the announcement remains pending.
+4. Establish and read back admin **edit** access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and stable-UUID retries. Without a transport, the announcement remains pending.
 
 SQLite and backups retain the URL, hash, revision, operation tokens and recovery/delivery metadata, **never generated text or native block payloads**. The staging folder must be approved and private, including inherited permissions; runtime checks do not replace that setup review. Fixtures prove HTTP behavior, not tenant entitlement or actual Lark appearance.
 
@@ -385,7 +391,8 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `APP_MODE`, `ENABLE_OUTBOUND` | Keep `preview` and `false` |
 | `BUSINESS_TIMEZONE` | `Africa/Nairobi` |
 | `SQLITE_FILE_PATH` | Dedicated local preview ledger; parent directory must exist |
-| `LARK_APP_ID`, `SOURCE_CHAT_ID`, `MANAGEMENT_CHAT_ID` | Approved app/group scope; the supplied management ID is a placeholder |
+| `LARK_APP_ID`, `SOURCE_CHAT_ID` | Approved app and source-group scope |
+| `REPORT_RECIPIENT_TYPE`, `REPORT_RECIPIENT_ID` | `open_id` + privately configured admin ID; use `chat_id` + test-group ID for development |
 | `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by login and `worker run`; separate worker user-OAuth grant under the approved app/account |
 | `LARK_OAUTH_SCOPES` | Explicit user read scopes for `worker-auth`; `offline_access` is added automatically |
 | `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
@@ -401,6 +408,45 @@ No approved annual holiday dataset is bundled. Initial worker login uses `pnpm w
 For server deployment, follow the [step-by-step checklist](DEPLOYMENT_CHECKLIST.md) and [preview host setup](deploy/README.md). GitHub Actions verifies and publishes a tested image; a separately approved manual deployment connects through Tailscale and preserves host-mounted SQLite and OAuth credentials. Preview sending and brief publication remain disabled.
 
 For Docker builds, acceptance, volume preparation and startup, follow the [runbook](RUNBOOK.md#build-and-exercise-the-local-image). The supplied Compose package is offline, publishes no ports and forces sending off. A due report that needs Lark remains blocked offline.
+
+### Server deployment and CI/CD
+
+The Ubuntu host runs **one Docker Compose worker**. Docker's restart policy handles process failure and host boot; no separate systemd unit, reverse proxy or inbound application port is required. The worker makes outbound HTTPS requests to Lark and the selected model provider.
+
+```mermaid
+flowchart TB
+    CI["GitHub CI<br/>Tests · lint · types · container acceptance"]:::ci
+    IMAGE["Reviewed main release<br/>Tested image → public GHCR digest"]:::release
+    GATE["Preview deployment approval<br/>Restricted Tailscale + SSH identity"]:::release
+    HOST["Ubuntu · Docker Compose<br/>Replace one worker"]:::host
+    DATA[("Private host storage<br/>SQLite · OAuth · backups")]:::data
+    DOPPLER["Doppler · scoped service token<br/>App/model secrets at deployment"]:::secret
+    CI --> IMAGE --> GATE --> HOST
+    DATA --> HOST
+    DOPPLER --> HOST
+    classDef ci fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:2px;
+    classDef release fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px;
+    classDef host fill:#d1fae5,stroke:#059669,color:#064e3b,stroke-width:2px;
+    classDef data fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px;
+    classDef secret fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px;
+```
+
+| Host path | Purpose |
+|---|---|
+| `/opt/task-list/ledger` | Persistent SQLite and recovery markers, mounted at `/data` |
+| `/opt/task-list/credentials` | Private rotating OAuth grant, mounted writable at `/credentials` |
+| `/opt/task-list/backups` | Online snapshots; off-server copies still need an agreed policy |
+| `/opt/task-list/calendar.json` | Reviewed calendar, mounted read-only |
+| `/opt/task-list/worker.env` | Root-owned settings; real recipient identity stays private |
+| `/opt/task-list/doppler.token` | Root-private scoped token; never passed into the worker container |
+
+These paths survive image replacement. The container runs as UID/GID 1000 with a read-only root, dropped capabilities and bounded Docker logs. Doppler supplies app/model secrets; the rotating OAuth grant stays in a private file. Deployment validates configuration, fetches secrets and pulls the image before stopping the worker, backs up existing SQLite, then checks the replacement. Failed readiness stops the replacement; it never automatically restores stale data or replays sends.
+
+1. Merge a reviewed PR after **CI** passes. Run **Publish image** from `main`; it verifies and publishes the same tested image, then records its SHA-256 digest.
+2. Run **Deploy preview** with operation `check` to verify restricted GitHub-runner connectivity. Select `deploy` with the published digest and approve the protected `preview` environment.
+3. Inspect worker status and correlated logs. Keep restore mode and outbound restrictions until live calendar, OAuth renewal, admin bot availability/Doc access and activation checks pass.
+
+**Current state:** the server runs a paused preview, with a fresh worker grant installed; history access needs corrected-scope consent and live renewal remains unverified. Direct-admin delivery passes local tests and awaits reviewed release and live access acceptance. Publishing and deployment are manual workflows; merging does not activate the worker. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
 
 ## Usage and operations
 
@@ -431,7 +477,7 @@ pnpm delivery status --id <delivery-id>
 | Stop, replace or roll back the container | [Release recovery](RUNBOOK.md#stop-replace-and-roll-back) |
 | Validate access and prepare future activation | [Deferred live acceptance](RUNBOOK.md#deferred-live-acceptance) |
 
-Unresolved reads or candidates are not valid zero-submission days. Leave uncertain sends unresolved until evidence supports a decision; reconciliation itself never sends. Retention/pruning, off-server backup scheduling, restore release and production activation are not configured. The manual management list remains the fallback.
+Unresolved reads or candidates are not valid zero-submission days. Leave uncertain sends unresolved until evidence supports a decision; reconciliation itself never sends. Retention/pruning, off-server backup scheduling, restore release and production activation are not configured. The manual admin list remains the fallback.
 
 ## Observability
 

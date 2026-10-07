@@ -149,3 +149,9 @@ The deploy workflow does not copy source, install privileged tooling or bootstra
 Host acceptance verified clean stop/restart, preserved SQLite integrity, non-root/read-only/no-port runtime settings, online backup and an isolated restore with its pause marker. These checks do not establish Lark access or live report delivery; local acceptance snapshots also do not replace an off-server backup policy.
 
 For a failed deployment, find its run ID and finite phase in the audit. Failures before `stop` leave the current worker alone; failures after `stop` need operator inspection. Preserve the ledger and rotating grant. Review schema compatibility before any image rollback, and use the [runbook](../RUNBOOK.md) for isolated paused restore/reconciliation. An interrupted SSH session is not evidence that deployment did or did not finish: inspect host state before retrying.
+
+## Report recipient configuration
+
+New preview settings use `REPORT_RECIPIENT_TYPE` and `REPORT_RECIPIENT_ID`. Keep `chat_id` and the approved development-test-group ID during deployment acceptance. Production will use `open_id` and the privately resolved admin ID after availability and Doc editor access are verified. Do not include the admin's name or actual ID in tracked files.
+
+Existing group-only host settings remain compatible. The helper accepts one complete new recipient or the legacy group setting, rejects conflicting settings, and compares recipient type/ID during upgrades. A destination change requires a separate stopped-worker scope review; an image upgrade cannot redirect frozen reports. No change here enables outbound or brief publishing.

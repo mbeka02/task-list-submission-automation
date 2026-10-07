@@ -162,7 +162,7 @@ See [RUNBOOK.md](RUNBOOK.md) for current commands, frozen-delivery recovery and 
 - [x] Complete fresh worker device consent and verify the configured reader locally; credentials remain private.
 - [x] Resolve one admin contact; keep their identity only in private runtime configuration.
 - [x] Merge worker OAuth PR #21 and install the private grant on the paused server (UID 1000, mode 0600); reviewed image publication remains separate.
-- [x] Verify direct-user addressing, Doc editor permissions and restart recovery with synthetic fixtures: 465 source tests and 26 Docker acceptance checks pass.
+- [x] Verify direct-user addressing, Doc editor permissions and restart recovery with synthetic fixtures: 466 source tests pass; 26 Docker checks passed, and the rebuilt corrected-scope login check also passes.
 - [ ] Configure `REPORT_RECIPIENT_TYPE=open_id` and the private `REPORT_RECIPIENT_ID` through a reviewed destination change; never redirect existing deliveries.
 - [ ] Obtain explicit approval for an admin delivery/access acceptance test before activation.
 

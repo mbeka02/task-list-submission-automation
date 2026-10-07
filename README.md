@@ -2,7 +2,7 @@
 
 A TypeScript worker that identifies who posted a daily task list in Lark and prepares an admin report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
 
-**Release status:** the optional brief implementation and local release acceptance are complete. Gemini and DeepSeek pass the same offline container publication/recovery drill; live quality and native Lark appearance/access are still unverified. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. A paused server preview and fresh worker OAuth grant are in place; live renewal, admin access acceptance and production activation remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
+**Release status:** the optional brief implementation and local release acceptance are complete. Gemini and DeepSeek pass the same offline container publication/recovery drill; live quality and native Lark appearance/access are still unverified. The worker CLI keeps sending disabled, including when `APP_MODE=production`; `ENABLE_OUTBOUND=true` is rejected. The reviewed release runs as a paused server preview; its separate worker OAuth grant successfully reads source history. Live renewal, admin access acceptance and production activation remain pending. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
 
 ## Table of contents
 
@@ -446,7 +446,7 @@ These paths survive image replacement. The container runs as UID/GID 1000 with a
 2. Run **Deploy preview** with operation `check` to verify restricted GitHub-runner connectivity. Select `deploy` with the published digest and approve the protected `preview` environment.
 3. Inspect worker status and correlated logs. Keep restore mode and outbound restrictions until live calendar, OAuth renewal, admin bot availability/Doc access and activation checks pass.
 
-**Current state:** the server runs a paused preview, with a fresh worker grant installed; history access needs corrected-scope consent and live renewal remains unverified. Direct-admin delivery passes local tests and awaits reviewed release and live access acceptance. Publishing and deployment are manual workflows; merging does not activate the worker. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
+**Current state:** the reviewed direct-admin release is deployed as a paused preview. Corrected-scope worker consent is complete, and a bounded source-history read succeeded on the server. Live renewal remains unverified. The preview retains its test-group destination; changing to the privately configured admin requires a stopped-worker scope review and live access acceptance. Publishing and deployment are manual workflows; merging does not activate the worker. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
 
 ## Usage and operations
 

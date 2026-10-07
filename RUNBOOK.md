@@ -317,15 +317,29 @@ make an old version start.
 
 If OAuth renewal reports revoked/expired/uncertain, stop and reauthorize the separate
 worker grant under the same approved app/account. Do not delete a stale lock and
-replay an uncertain refresh request. Initial login/renewal recovery UX remains a
-live setup gate. Never paste tokens into report content or ordinary diagnostics.
+replay an uncertain refresh request. Use the [worker login commands](#provision-the-workers-own-oauth-login) for reviewed reauthorization; live renewal remains an acceptance gate. Never paste tokens into report content or ordinary diagnostics.
+
+## Provision the worker's own OAuth login
+
+Keep the deployed worker paused. This operator command requests a fresh user grant under the configured app; it does not import, rotate or read the interactive CLI's credentials. Provider-side independence of simultaneous grants still needs live verification.
+
+1. Set `LARK_APP_ID`, `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` and `LARK_OAUTH_SCOPES`. Obtain the app secret through the scoped Doppler config; never paste it into an argument or log. Use a dedicated credential directory, owned by the invoking user, mode 0700. The eventual container directory/file must be owned by UID/GID 1000.
+2. Request only enabled user read permissions required for the reader and identity check. The command allows `im:message.group_msg:get_as_user`, `im:message:readonly`, `im:chat:read`, `contact:user.base:readonly` and `offline_access`; at least one message-read scope is required. It adds `offline_access` for renewal. Confirm the app's enabled scopes and availability before live consent; the allowlist is not proof of permission.
+3. Run `pnpm worker-auth start`. Open the returned verification URL and approve as the configured reader before the stated expiry. Output contains only the URL, user code and expiry; the device code stays in a private `.login.json` file beside the credentials.
+4. Run `pnpm worker-auth finish`. It honors provider pending/slow-down intervals, verifies the returned user's open ID, and atomically creates a mode-0600 Bearer grant in the existing worker schema. The built-image equivalent is `node dist/worker-auth-command.js start|finish`. Neither command unpauses the worker or sends anything.
+
+Existing credentials, including dangling links, are refused rather than overwritten. For reviewed reauthorization, stop users of this credential file and privately preserve the old grant before selecting a new file; never restore a previously consumed refresh token. Denied, expired, invalid or uncertain issuance requires a new `start`. A `consuming` journal prevents replay after interrupted token issuance. A process killed while holding the shared `.lock` leaves it in place: verify the owner is no longer running and review the journal before removing that lock and starting a **new** login; do not resume its old exchange.
+
+`worker_login_started`, `worker_login_completed` and `worker_login_failed` provide correlated Pino events with entry point, duration/attempt count and finite reasons. URLs, codes, scopes, tokens and provider descriptions are excluded from logs. Local tests exercise real HTTP and worker credential consumption with synthetic data; live grant issuance/renewal is a separate acceptance gate.
+
+Protocol references: [official device flow](https://github.com/larksuite/cli/blob/7beffb086d7fa3c5b843d8affa7c089f49cfc65e/internal/auth/device_flow.go), [official endpoint paths](https://github.com/larksuite/cli/blob/7beffb086d7fa3c5b843d8affa7c089f49cfc65e/internal/auth/paths.go). The worker uses `/oauth/v1/device_authorization`, `/oauth/v3/token` and `/open-apis/authen/v1/user_info`; no redirect listener is needed.
 
 ## Deferred live acceptance
 
 When the server returns, identify the deployment/backup/calendar operators; verify
 management access, external-group reminder eligibility, worker OAuth provisioning
 and real SDK renewal. Agree evidence retention/access and alert recipients. Compare
-bounded preview days with Joseh's manual list and explain every discrepancy. The
+bounded preview days with the admin's manual list and explain every discrepancy. The
 comparison period and acceptable results require agreement; local fixtures do not
 prove these live conditions.
 
@@ -340,7 +354,7 @@ A fixture-passing model is not yet proven cost-effective or factually reliable.
 Gemini remains the initial selected provider; DeepSeek live credentials/model
 access and processing terms need their own review before selection.
 
-Joseh's manual list remains the fallback while access or the worker is unavailable.
+The admin's manual list remains the fallback while access or the worker is unavailable.
 Both sending routes require separate activation approval after those gates pass.
 The current local CLI still rejects `ENABLE_OUTBOUND=true`.
 

@@ -386,7 +386,8 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `BUSINESS_TIMEZONE` | `Africa/Nairobi` |
 | `SQLITE_FILE_PATH` | Dedicated local preview ledger; parent directory must exist |
 | `LARK_APP_ID`, `SOURCE_CHAT_ID`, `MANAGEMENT_CHAT_ID` | Approved app/group scope; the supplied management ID is a placeholder |
-| `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by `worker run`; separate worker user-OAuth grant under the approved app/account |
+| `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by login and `worker run`; separate worker user-OAuth grant under the approved app/account |
+| `LARK_OAUTH_SCOPES` | Explicit user read scopes for `worker-auth`; `offline_access` is added automatically |
 | `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
 | `WORKER_CHECK_INTERVAL_MS` | Delay after each completed check; default `60000` |
 | `WORKER_RESTORE_MODE` | Pause work during recovery; a persistent restore marker also enforces the pause |
@@ -395,7 +396,7 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `BRIEF_PROVIDER`, `GEMINI_MODEL` / `DEEPSEEK_MODEL` | Freeze provider/model metadata; no model key is required for capture/status |
 | `BRIEF_TEMPLATE_VERSION`, `BRIEF_PROMPT_VERSION`, `BRIEF_SCHEMA_VERSION` | Explicit versions recorded with frozen input |
 
-No approved annual holiday dataset or initial worker OAuth login command is bundled. The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
+No approved annual holiday dataset is bundled. Initial worker login uses `pnpm worker-auth start` and `pnpm worker-auth finish`; see [worker login](RUNBOOK.md#provision-the-workers-own-oauth-login). The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
 
 For server deployment, follow the [step-by-step checklist](DEPLOYMENT_CHECKLIST.md) and [preview host setup](deploy/README.md). GitHub Actions verifies and publishes a tested image; a separately approved manual deployment connects through Tailscale and preserves host-mounted SQLite and OAuth credentials. Preview sending and brief publication remain disabled.
 

@@ -56,7 +56,7 @@ const server = createServer(async (req, res) => {
         token_type: "Bearer",
         expires_in: 7200,
         refresh_token_expires_in: 604800,
-        scope: "offline_access im:message.group_msg:get_as_user",
+        scope: "offline_access im:message:readonly",
       };
     if (body?.access_token && process.env.OAUTH_TEST_MODE === "missing_scope")
       body.scope = "offline_access";

@@ -4,6 +4,8 @@ import { type DestinationStream, type Logger, pino } from "pino";
 
 /** Attribution is supplied at the entry point, then retained through nested asynchronous work. */
 export type EntryPoint =
+  | "worker_auth_start"
+  | "worker_auth_finish"
   | "worker_once"
   | "worker_startup"
   | "worker_periodic"
@@ -27,6 +29,7 @@ const levels = new Set([
   "silent",
 ]);
 const reasons = new Set([
+  "credentials_already_exist",
   "execution_unavailable",
   "storage_error",
   "storage_unavailable",

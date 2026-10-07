@@ -765,3 +765,54 @@ acceptance(
   },
   30_000,
 );
+
+acceptance(
+  "built worker login provisions a private grant through synthetic device consent",
+  () => {
+    const volume = `task-list-login-${randomUUID()}`;
+    execFileSync("docker", [
+      "volume",
+      "create",
+      "--label",
+      "task-list.acceptance=true",
+      volume,
+    ]);
+    const options = [
+      "--mount",
+      `type=volume,src=${volume},dst=/credentials`,
+      "--mount",
+      `type=bind,src=${resolve("tests/support/worker-auth-http.mjs")},dst=/app/worker-auth-http.mjs,readonly`,
+      ...Object.entries({
+        LARK_APP_ID: "cli_test",
+        LARK_APP_SECRET: "synthetic-app-secret",
+        LARK_READER_OPEN_ID: "ou_reader",
+        LARK_USER_CREDENTIAL_FILE: "/credentials/user-oauth.json",
+        LARK_OAUTH_SCOPES: "im:message.group_msg:get_as_user",
+        OAUTH_TEST_REQUESTS: "/credentials/requests.log",
+      }).flatMap(([key, value]) => ["--env", `${key}=${value}`]),
+    ];
+    try {
+      const command = (action: string) =>
+        container(
+          [
+            "node",
+            "--import",
+            "/app/worker-auth-http.mjs",
+            "dist/worker-auth-command.js",
+            action,
+          ],
+          options,
+        );
+      expect(JSON.parse(command("start"))).toMatchObject({
+        status: "authorization_pending",
+        userCode: "DEMO-1234",
+      });
+      expect(JSON.parse(command("finish"))).toMatchObject({
+        status: "ready",
+        readerOpenId: "ou_reader",
+      });
+    } finally {
+      execFileSync("docker", ["volume", "rm", volume]);
+    }
+  },
+);

@@ -2,7 +2,7 @@
 
 A TypeScript worker that identifies who posted a daily task list in Lark and prepares an admin report. It also prepares a 09:30 reminder, using Nairobi working days and a reviewed Kenyan public-holiday calendar.
 
-**Release status:** production CLI sending and brief publishing are now available with explicit activation settings. The server still runs the reviewed **paused preview**; this branch does not activate it. Reports will go to a private operator/admin group using a signed custom webhook. Direct admin messaging was rejected by Lark's tenant boundary. Source history access is verified; live worker renewal, webhook delivery and reports-group Doc access remain deployment gates. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
+**Release status:** production CLI sending and brief publishing are now available with explicit activation settings. The server still runs the reviewed **paused preview**; this branch does not activate it. Reports will go to a private operator/admin group using a signed custom webhook. Direct admin messaging was rejected by Lark's tenant boundary. Source history access is verified; live worker renewal, a Doc-enabled user grant, webhook delivery and view-only reports-group Doc access remain deployment gates. See the [operator runbook](RUNBOOK.md#deferred-live-acceptance).
 
 ## Table of contents
 
@@ -97,7 +97,7 @@ flowchart TB
     GEMINI["Gemini · official SDK<br/>Minimal thinking · one attempt"]:::provider
     DEEPSEEK["DeepSeek · native fetch<br/>Thinking disabled · one attempt"]:::provider
     VALIDATE["Shared draft validation<br/>Reference coverage · limits · safe failures"]:::worker
-    DOC["Private native Lark Doc<br/>Write · verify content · verify editor access"]:::lark
+    DOC["User-owned native Lark Doc<br/>Owner edits · reports group views"]:::lark
     LINK["Saved Doc link + existing delivery ledger<br/>Claims · endpoint binding · receipt"]:::worker
     ADMIN["Private reports group<br/>Operator + admin"]:::lark
 
@@ -123,9 +123,9 @@ flowchart TB
 
 **Legend:** blue = Lark; green = implemented library modules; purple = frozen input and operational metadata; orange = interchangeable model adapters. The scheduler freezes brief input once at/after 10:15. The dashed edge requires production publish configuration and outbound activation; preview can capture without publishing. Core failures do not suppress brief reads, and brief failures do not suppress core work. Each adapter makes one request per invocation; the coordinator caps total reservations at two and returns labelled source extracts if generation fails. Model results return through that coordinator; return arrows are omitted for readability. Names and late labels stay in the application; providers receive task text and opaque references only.
 
-History reads use the approved user's OAuth access because the source is an external group. Native Doc creation and permission checks use the app. Signed custom webhooks deliver to external groups; app-bot delivery remains available for supported development groups. Every adapter has an explicit destination scope and no account fallback.
+History reads use the approved user's OAuth access because the source is an external group. Production Doc creation and permission checks use the same approved user OAuth identity, so the operator owns and edits each Doc. Legacy app-owned publication remains available explicitly. Signed custom webhooks deliver to external groups; app-bot delivery remains available for supported development groups. Every adapter has an explicit destination scope and no account fallback.
 
-Production names reports and brief links target a **private reports group containing the operator and admin**. Configure `REPORT_RECIPIENT_TYPE=chat_id`, its private `REPORT_RECIPIENT_ID`, and `REPORT_TRANSPORT=webhook`. Source reminders use their own `REMINDER_TRANSPORT=webhook` and separate signed endpoint. Keep URLs/signing secrets in Doppler. Doc publication independently grants and verifies editor access before announcing its link; a webhook does not grant Doc permissions.
+Production names reports and brief links target a **private reports group containing the operator and admin**. Configure `REPORT_RECIPIENT_TYPE=chat_id`, its private `REPORT_RECIPIENT_ID`, and `REPORT_TRANSPORT=webhook`. Source reminders use their own `REMINDER_TRANSPORT=webhook` and separate signed endpoint. Keep URLs/signing secrets in Doppler. Doc publication independently verifies the operator as sole owner, grants the reports group view-only access, and restricts collaborator management to the owner before announcing the link. Link sharing stays closed; a webhook does not grant Doc permissions.
 
 The existing `destinationChatId` storage column holds a durable recipient scope: old group IDs stay unchanged; new user keys encode `open_id` plus the ID. Report/brief uniqueness and recovery remain bound to that key. Changing recipients never redirects frozen jobs. Existing group-only configuration remains supported for release compatibility, but new configuration must supply exactly one recipient and cannot conflict with a legacy destination.
 
@@ -171,7 +171,7 @@ The ledger has **six business tables** plus Drizzle's migration journal. [The Dr
 | `message_observation` | Preserve an immutable version the worker actually observed | `id`, `messageKey`, `fingerprint`, JSON `payload` with source content, normalized text, observation time and detector provenance |
 | `daily_delivery` | Freeze one report or reminder and track its delivery/recovery | Identity/scope: `id`, `appId`, `businessDate`, `sourceChatId`, `destinationChatId`, `kind`, `revision`; frozen content: `policyVersion`, `text`, `sendUuid`, `timeZone`, `cutoffMs`, `textHash`; lifecycle: `state`, `messageId`, `attemptCount`, `firstAttemptMs`, `nextAttemptMs`, `adapterKind`, `transportBinding` (webhook endpoint hash), `claimToken`, `claimExpiresMs`, `acknowledgedMs`, `lastError`, JSON `reconciliations` |
 | `report_entry` | Snapshot each distinct submitter and the exact evidence used in a report | `deliveryId`, `position`, JSON `payload` with identity/name/evidence, `observationKey`, `senderIdentityKey` |
-| `daily_brief` | Freeze one optional brief input per scoped date/revision | Scope/ID, revision, capture/observation times, input fingerprint, policy/template/prompt/schema versions, provider/model, `outputMode=doc`, immutable `state=input_frozen`; generation state/kind, attempts/usage, deadline and claim/backoff; publication state/claim, Doc URL/hash/revision, write tokens, staging configuration and announcement delivery FK |
+| `daily_brief` | Freeze one optional brief input per scoped date/revision | Scope/ID, revision, capture/observation times, input fingerprint, policy/template/prompt/schema versions, provider/model, `outputMode=doc`, immutable `state=input_frozen`; generation state/kind, attempts/usage, deadline and claim/backoff; publication state/claim, Doc URL/hash/revision, write tokens, staging/auth/owner/access configuration and announcement delivery FK |
 | `brief_entry` | Ordered distinct brief membership, including labelled late submissions | `briefId`, `position`, `senderIdentityKey`, required `observationKey`, JSON `payload` with name/identity, original send time, timeliness and normalized source text |
 
 A reminder has a `daily_delivery` record and no report entries. A zero-submission report also has no entries. Later name changes or message edits do not alter a frozen report. Observations are evidence captured by this worker, not a complete Lark edit history. Ordinary unrelated group posts are not stored as new business records.
@@ -229,7 +229,7 @@ erDiagram
 
 The ERD shows selected columns; the table above lists the full schema. `PK` = primary key, `FK` = foreign key, `UK` = unique key; a circle means optional and a crow's foot means many. Entry positions form a composite primary key with `deliveryId`. New report entries link to one observation; that link remains nullable to support older records. Colours distinguish source messages (blue), observations (green), deliveries (purple) and report entries (amber).
 
-The brief adds separate membership because its 10:15 capture can include late submissions and newer observations. Repeat preparation returns the same job/input even after source edits or configuration changes. Names-report evidence retains its original detector provenance. These tables store **source task lists** and generation metadata, not generated Doc content. `generationState=content_ready` means an in-memory handoff is prepared, not that a Doc has been published. Publication state, the Doc URL, canonical hash, acknowledged revision and write-operation tokens are stored separately. `publicationState=published` means the verified Doc has a frozen link announcement; inspect its delivery state to see whether Lark acknowledged that message.
+The brief adds separate membership because its 10:15 capture can include late submissions and newer observations. Repeat preparation returns the same job/input even after source edits or configuration changes. Names-report evidence retains its original detector provenance. These tables store **source task lists** and generation metadata, not generated Doc content. `generationState=content_ready` means an in-memory handoff is prepared, not that a Doc has been published. Publication state, Doc URL/hash/revision, operation tokens and the frozen Doc auth strategy, owner and recipient permission are stored separately. Recovery cannot switch ownership or broaden access. `publicationState=published` means the verified Doc has a frozen link announcement; inspect its delivery state to see whether Lark acknowledged that message.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"lineColor":"#64748b","fontFamily":"sans-serif"}}}%%
@@ -248,6 +248,9 @@ erDiagram
         TEXT inputFingerprint
         TEXT state "input_frozen"
         TEXT documentUrl
+        TEXT documentAuthStrategy "app / user_oauth"
+        TEXT documentOwnerOpenId "private scoped owner"
+        TEXT documentRecipientPermission "view / edit"
         TEXT publicationState
         TEXT announcementDeliveryId FK
     }
@@ -373,12 +376,12 @@ Without `docPublishing`, `ready` returns an in-memory handoff and performs no Do
 
 ### Editable Doc publication
 
-Configure `docPublishing` with the approved app secret, private `stagingFolderToken` and tenant `documentBaseUrl` ending in `/docx/`; inject the reviewed scoped delivery `transport` for announcements (signed webhook for the private external group). Source reads continue using user OAuth. Production folder authorization, private reports-group editor access and a live appearance/access check remain deployment gates.
+Configure `docPublishing` with the app secret, private `stagingFolderToken`, tenant `documentBaseUrl` ending in `/docx/`, `auth: { strategy: 'user_oauth', readerOpenId, credentialFile }` and `recipientPermission: 'view'`. The approved user owns and edits the Doc; the reports group can view it. Announcements use the independently scoped signed webhook. The worker CLI selects this through `LARK_DOC_AUTH_STRATEGY=user_oauth`. A Doc-enabled user grant, a private folder accessible to that user and a live view-only access check remain deployment gates. Existing app integrations default to app auth and editor access.
 
 1. Persist a fenced publication claim and canonical content hash, then create a Doc in the selected staging folder. Save its acknowledged URL before writing.
-2. Require closed link access and restricted collaborators before sending content. A new Doc's tenant-readable default is closed only when this app is its sole verified owner; read back settings and collaborators before writing. The bot needs `docs:permission.setting:write_only` for that change. Write native headings and bullets in batches of at most 50 blocks, recording each operation token beforehand. Names are bold, late posts are labelled, the heading uses a blue accent, and the closing note is muted and italic. Omit empty Notes.
+2. Require closed link access and restricted collaborators before sending content. A new Doc's tenant-readable default is closed only when the configured identity is its sole verified owner. User-owned publication also restricts collaborator management to the owner; read back both settings and collaborators before writing. Write native headings and bullets in batches of at most 50 blocks, recording each operation token beforehand. Names are bold, late posts are labelled, the heading uses a blue accent, and the closing note is muted and italic. Omit empty Notes.
 3. Read every block page at a pinned revision. Verify the hierarchy, order, text and formatting against the canonical hash, ignoring benign server defaults. Confirm the revision stayed unchanged.
-4. Establish and read back the configured recipient's **edit** access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and adapter-specific recovery. Without a transport, the announcement remains pending.
+4. Establish and read back the configured reports group's **view** access and the sole operator's owner access, then atomically freeze a distinct `kind=brief` link announcement through `prepareBriefAnnouncement({ briefId })`. The existing delivery ledger owns sending and adapter-specific recovery. Without a transport, the announcement remains pending.
 
 SQLite and backups retain the URL, hash, revision, operation tokens and recovery/delivery metadata, **never generated text or native block payloads**. The staging folder must be approved and private, including inherited permissions; runtime checks do not replace that setup review. Fixtures prove HTTP behavior, not tenant entitlement or actual Lark appearance.
 
@@ -399,7 +402,7 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `REMINDER_WEBHOOK_URL`, `REMINDER_WEBHOOK_SIGNING_SECRET` | Separate Doppler secrets for the source-group reminder bot |
 | `REPORT_RECIPIENT_TYPE`, `REPORT_RECIPIENT_ID` | `chat_id` + private reports-group ID; `open_id` remains supported for same-tenant app-bot recipients |
 | `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by login and `worker run`; separate worker user-OAuth grant under the approved app/account |
-| `LARK_OAUTH_SCOPES` | Explicit user read scopes for `worker-auth`; `offline_access` is added automatically |
+| `LARK_OAUTH_SCOPES` | Explicit read scopes, plus the five Doc scopes when opting into user-owned publishing; `offline_access` is added automatically. See [consent setup](RUNBOOK.md#provision-the-workers-own-oauth-login) |
 | `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
 | `WORKER_CHECK_INTERVAL_MS` | Delay after each completed check; default `60000` |
 | `WORKER_RESTORE_MODE` | Pause work during recovery; a persistent restore marker also enforces the pause |
@@ -407,7 +410,8 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `BRIEF_ACTIVATION_DATE` | Explicit reviewed start date within calendar coverage, on/after core activation |
 | `BRIEF_PROVIDER`, `GEMINI_MODEL` / `DEEPSEEK_MODEL` | Freeze provider/model metadata; no model key is required for capture/status |
 | `BRIEF_TEMPLATE_VERSION`, `BRIEF_PROMPT_VERSION`, `BRIEF_SCHEMA_VERSION` | Explicit versions recorded with frozen input |
-| `LARK_DOC_STAGING_FOLDER_TOKEN`, `LARK_DOCUMENT_BASE_URL` | Approved app-owned private folder and tenant URL ending in `/docx/` for publication |
+| `LARK_DOC_AUTH_STRATEGY` | `app` by default; production external-group briefs select `user_oauth`, which fixes group access to view-only and requires the configured reader/file |
+| `LARK_DOC_STAGING_FOLDER_TOKEN`, `LARK_DOCUMENT_BASE_URL` | Private folder accessible to the selected Doc owner and tenant URL ending in `/docx/` |
 
 No approved annual holiday dataset is bundled. Initial worker login uses `pnpm worker-auth start` and `pnpm worker-auth finish`; see [worker login](RUNBOOK.md#provision-the-workers-own-oauth-login). The calendar JSON needs `version`, `fromDate`, `throughDate`, `reviewedOn`, HTTPS `sourceUrls` and `publicHolidays` dates. OAuth files require a private directory (0700) and file (0600), owned by the worker. Provision a separate grant; copying the CLI's rotating refresh token can disrupt its session. See [preview configuration](RUNBOOK.md#configure-an-isolated-preview) and [credential recovery](RUNBOOK.md#stop-replace-and-roll-back).
 
@@ -500,7 +504,7 @@ Worker summaries distinguish older names reports (`backfillCount`), older briefs
 | Why did generation degrade? | Model attempt number, classified reason, retry delay and nullable token counters; `brief_content_prepared` with `kind=fallback` |
 | Does delivery/publication need review? | `delivery_completed` with uncertain/failed state; `document_step_failed` stage; `brief_completed` with review-required reason and opaque job ID |
 
-Fields are allowlisted. Logs omit names, sender/chat/message IDs, source/generated text, prompts, Doc URLs/tokens, credentials and vendor error bodies/stacks. Unknown reasons become `unclassified`; add new reviewed reason codes to the allowlist when introducing them. Synchronous logging failures cannot change a delivery's durable acknowledgement or authorize a retry. SDK body/header logging stays disabled.
+Doc-stage events include finite auth-strategy and recipient-permission labels. Fields are allowlisted. Logs omit names, sender/chat/message IDs, source/generated text, prompts, Doc URLs/tokens, credentials and vendor error bodies/stacks. Unknown reasons become `unclassified`; add new reviewed reason codes to the allowlist when introducing them. Synchronous logging failures cannot change a delivery's durable acknowledgement or authorize a retry. SDK body/header logging stays disabled.
 
 Library callers opt in with `logger: createOperationalLogger()` and an optional approved `entryPoint` when opening `createDueWorker`, `openReportLedger` or `openBriefCoordinator`. Without a logger, these APIs remain quiet. Use a logger without sensitive custom bindings.
 
@@ -538,7 +542,7 @@ Each phase/slice starts on its own branch from current `main`. Use coherent, pur
 | [src/submission-history.ts](src/submission-history.ts) | Paginated, bounded Lark history reads |
 | [src/brief-submissions.ts](src/brief-submissions.ts) | Optional brief input capture, shared validity rules and late labels; scheduled independently at 10:15 |
 | [src/brief-coordinator.ts](src/brief-coordinator.ts) | Bounded generation, source fallback, fenced Doc publication and announcement recovery |
-| [src/lark-brief-doc.ts](src/lark-brief-doc.ts) | App-only native Doc rendering, bounded SDK calls, canonical readback and editor access |
+| [src/lark-brief-doc.ts](src/lark-brief-doc.ts) | Explicit user/app Doc identity, native rendering, bounded SDK calls, ownership and recipient-access verification |
 | [src/brief-content.ts](src/brief-content.ts) | Document-input and operational attempt types |
 | [src/brief-generator.ts](src/brief-generator.ts) | Shared provider contract and strict input/output validation |
 | [src/gemini-brief-generator.ts](src/gemini-brief-generator.ts) | Single-attempt Gemini SDK adapter, cancellation, usage and safe failure classification |

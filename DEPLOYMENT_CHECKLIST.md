@@ -1,6 +1,6 @@
 # Deployment checklist
 
-Working plan for **7 October 2026**. Branch: `codex/preview-deployment` (following merged deployment PR #19).
+Working plan for **7 October 2026**. Current branch: `codex/production-activation`; earlier checklist steps record the reviewed preview deployments.
 This checklist covers deployment and debugging; no production activation has occurred.
 
 ## Target and verified starting point
@@ -137,12 +137,12 @@ The preview helper and restricted SSH boundary are implemented and tested locall
 - [x] Agree and test the production CLI, durable OAuth refresh and host-deployment seams.
 - [x] Wire explicitly activated production publishing and separately scoped app-bot/webhook transports into the CLI; preview remains outbound-disabled.
 - [ ] Reject placeholders/unapproved destinations, missing model credentials and unsafe publishing settings before mutations.
-- [ ] Verify source reader membership, reminder bot eligibility, test destination, native Doc scopes/folder/privacy and editor access.
+- [ ] Verify source reader membership, reminder bot eligibility, test destination, native user Doc scopes/folder/privacy and viewer access.
 - [ ] Prove names report + Doc/link in the development test group through the real deployed entry point, with separately approved content/model data processing.
-- [ ] Verify the private operator/admin reports group, its signed webhook and Doc editor access, activation dates and reviewed Kenyan holidays. Ongoing Gemini task-text processing is approved.
+- [ ] Verify the private operator/admin reports group, its signed webhook and group viewer access, activation dates and reviewed Kenyan holidays. Ongoing Gemini task-text processing is approved.
 - [ ] Activate the approved production destination; keep the manual report fallback and document rollback/reconciliation.
 
-**Current gates:** local production/webhook implementation is ready for review, but the server still runs the old paused preview. Live canonical OAuth renewal, the report endpoint, Doc editor access and calendar activation remain unverified. The source reminder endpoint passed its approved synthetic test and one bot message was verified. Direct-admin messaging was rejected by the tenant boundary; the chosen route is a private reports group with a custom webhook bot.
+**Current gates:** local production/webhook implementation is ready for review, but the server still runs the old paused preview. Live canonical OAuth renewal, fresh Doc-enabled consent/folder, the report endpoint, view-only Doc access and calendar activation remain unverified. The source reminder endpoint passed its approved synthetic test and one bot message was verified. Direct-admin messaging was rejected by the tenant boundary; the chosen route is a private reports group with a custom webhook bot.
 
 ### 8. Operational acceptance
 
@@ -193,10 +193,21 @@ The preview retains the development test-group scope. Admin identity is prepared
 - [x] Prove signed acceptance, rate-limit backoff, lost-receipt review, endpoint binding and separate reminder/report routing with synthetic HTTP and real SQLite.
 - [x] Prove paused production Compose and scoped Doppler selection in isolated Docker; final source regression passed 494 tests (27 container-only checks skipped).
 - [x] Send the approved one-time source reminder test; webhook acceptance and exactly one bot message are verified.
-- [ ] Complete reports-group webhook acceptance after Doc editor access passes. The approved synthetic Doc is private and its content verified; the group editor grant was denied twice (HTTP 403/code `1063002`). No reports-group test message was sent. The approved user-owned/user-authenticated diagnostic Doc passed exact group-editor and closed-link verification. No report message was sent. Production user-OAuth Doc publishing remains a proposed seam; individual-editor sharing is on hold.
+- [ ] Complete reports-group webhook acceptance after final view-only Doc access passes. The earlier app-owned synthetic Doc was private and its content verified, but the group editor grant was denied twice (HTTP 403/code `1063002`). The approved user-owned/user-authenticated diagnostic Doc passed exact group-editor and closed-link verification. No reports-group test message was sent. The operator then approved implementing user-owned publication with group view-only access; individual-editor sharing remains on hold.
 - [ ] Test live OAuth renewal using the canonical server grant and the reviewed matching image.
 - [ ] Review fixed-date calendar and any additional Gazette notices before unpausing; the existing preview calendar remains acceptance-only.
 - [ ] Review/merge, publish the tested digest, install matching root-owned helpers, transition the stopped recipient and deploy paused production.
 - [ ] Verify fresh-secret reload/key rotation and activate after remaining gates. Off-server backups are deferred; local upgrade snapshots remain active.
 
-Final rebuilt-image local release acceptance passed 29 checks, including both provider Doc flows, deployment failures, storage persistence, predecessor compatibility and paused production secret selection. These synthetic checks do not establish live endpoint destinations or Doc ACLs.
+Final rebuilt-image local release acceptance passed 29 checks, including both provider Doc flows, deployment failures, storage persistence, predecessor compatibility and paused production secret selection. The view-only release repeats all 29 successfully, including user-owned brief settings and a preserved grant in paused production. These synthetic checks do not establish live endpoint destinations or Doc ACLs.
+
+### User-owned, view-only briefs — approved 7 October 2026
+
+- [x] Implement explicit user-OAuth Doc ownership and production group view-only access; keep links closed and collaborator management owner-only.
+- [x] Bind Doc auth strategy, owner and access level durably; reject recovery changes before networking. Legacy app publication stays compatible.
+- [x] Add opt-in Doc scopes to fresh worker login; keep message-send scopes forbidden and status credential-free.
+- [ ] Provision reviewed fresh Doc-enabled consent for the worker and a private folder accessible to its configured user. Do not overwrite a live rotating grant or assume an app-owned folder is compatible.
+- [ ] Run a separately approved synthetic **view-only** Doc/access and reports-webhook test with the matching reviewed release. The earlier diagnostic used group editor access; it does not prove the final viewer policy.
+- [ ] Complete canonical OAuth renewal, key rotation and reviewed calendar activation before unpausing. No server settings or scheduled sends changed during this implementation.
+
+Final view-only regression: **506 source tests passed**, 27 optional Docker cases skipped in the source run; **29 Docker checks passed** separately. Lint, types, build and script syntax checks passed. The SQL migration adds only three nullable publication identity/access columns.

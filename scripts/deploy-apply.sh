@@ -20,7 +20,7 @@ docker pull "$image" >/dev/null 2>&1
 TASK_LIST_IMAGE=$(docker image inspect --format '{{.Id}}' "$image")
 export TASK_LIST_IMAGE
 [[ $TASK_LIST_IMAGE =~ ^sha256:[a-f0-9]{64}$ ]]
-compose=(docker compose --project-name "$TASK_LIST_COMPOSE_PROJECT" --file "$(dirname "$0")/../deploy/compose.preview.yaml")
+compose=(docker compose --project-name "$TASK_LIST_COMPOSE_PROJECT" --file "$(dirname "$0")/../deploy/compose.$TASK_LIST_PROFILE.yaml")
 phase=preflight
 "${compose[@]}" run --rm --no-deps worker node dist/preflight.js >/dev/null 2>&1
 phase=configuration
@@ -56,8 +56,8 @@ phase=start
 phase=readiness
 for ((attempt=0; attempt<30; attempt++)); do
   if "${compose[@]}" exec --no-TTY worker node dist/worker-command.js status 2>/dev/null |
-    python3 -c 'import json,sys; v=json.load(sys.stdin); sys.exit(0 if v.get("status") in ("ok", "paused") and v.get("outboundEnabled") is False else 1)' 2>/dev/null; then
-    printf '{"status":"ready","mode":"preview","image":"%s","backup":"%s","runId":"%s"}\n' "$image" "$backup" "$TASK_LIST_DEPLOYMENT_ID"
+    python3 -c 'import json,sys; v=json.load(sys.stdin); sys.exit(0 if v.get("status") in ("ok", "paused") and v.get("outboundEnabled") == (sys.argv[1] == "production") else 1)' "$TASK_LIST_PROFILE" 2>/dev/null; then
+    printf '{"status":"ready","mode":"%s","image":"%s","backup":"%s","runId":"%s"}\n' "$TASK_LIST_PROFILE" "$image" "$backup" "$TASK_LIST_DEPLOYMENT_ID"
     exit 0
   fi
   sleep 1

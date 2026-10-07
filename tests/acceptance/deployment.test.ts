@@ -80,9 +80,19 @@ exec "${docker}" "$@"
     `#!/usr/bin/env bash
 set -e
 if [[ \${FIXTURE_FAIL_SECRETS:-} == true ]]; then echo 'synthetic-secret-do-not-log' >&2; exit 1; fi
+for ((index=1; index<=$#; index++)); do
+  if [[ \${!index} == --only-secrets ]]; then
+    next=$((index+1))
+    printf '%s' "\${!next}" > "$TASK_LIST_DEPLOY_ROOT/secret-selection.txt"
+  fi
+done
 while [[ $# -gt 0 && $1 != -- ]]; do shift; done
 shift
 export LARK_APP_SECRET=synthetic-secret-do-not-log
+export REPORT_WEBHOOK_URL=https://open.larksuite.com/open-apis/bot/v2/hook/aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa
+export REPORT_WEBHOOK_SIGNING_SECRET=synthetic-report-secret
+export REMINDER_WEBHOOK_URL=https://open.larksuite.com/open-apis/bot/v2/hook/bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb
+export REMINDER_WEBHOOK_SIGNING_SECRET=synthetic-reminder-secret
 exec "$@"
 `,
     { mode: 0o700 },
@@ -185,9 +195,9 @@ exec "$@"
         "credentials",
         "import fs from 'node:fs'; process.stdout.write(fs.readFileSync('/data/user-oauth.json','utf8'));",
       ),
-    deploy: () =>
+    deploy: (extra: NodeJS.ProcessEnv = {}) =>
       spawnSync("bash", [script, "--image", reference], {
-        env,
+        env: { ...env, ...extra },
         encoding: "utf8",
         timeout: 90_000,
       }),
@@ -613,4 +623,142 @@ acceptance(
     }
   },
   120000,
+);
+
+acceptance(
+  "production profile starts a paused outbound-capable worker with the approved typed recipient",
+  () => {
+    const f = fixture(true);
+    try {
+      const settings = join(f.root, "worker.env");
+      writeFileSync(
+        settings,
+        `${readFileSync(settings, "utf8")}\nAPP_MODE=production\nENABLE_OUTBOUND=true\nENABLE_DAILY_BRIEF=false\nWORKER_RESTORE_MODE=true\n`,
+        { mode: 0o600 },
+      );
+      const result = f.deploy();
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        status: "ready",
+        mode: "production",
+      });
+      const inspected = JSON.parse(
+        execFileSync("docker", ["inspect", f.containerId()], {
+          encoding: "utf8",
+        }),
+      )[0];
+      expect(inspected.Config.Env).toEqual(
+        expect.arrayContaining([
+          "APP_MODE=production",
+          "ENABLE_OUTBOUND=true",
+          "WORKER_RESTORE_MODE=true",
+          "REPORT_RECIPIENT_ID=ou_admin",
+        ]),
+      );
+      expect(f.grantContent()).toBe("synthetic rotating grant");
+    } finally {
+      f.close();
+    }
+  },
+  120_000,
+);
+
+acceptance(
+  "a stopped-worker recipient review permits one scoped transition while preserving the ledger",
+  () => {
+    const f = fixture();
+    try {
+      const initial = join(f.root, "worker.env");
+      writeFileSync(
+        initial,
+        `${readFileSync(initial, "utf8")}\nWORKER_RESTORE_MODE=true\n`,
+        { mode: 0o600 },
+      );
+      expect(f.deploy().status).toBe(0);
+      const id = f.containerId();
+      const next = join(f.root, "next-settings.env");
+      writeFileSync(
+        next,
+        readFileSync(join(f.root, "worker.env"), "utf8").replace(
+          "MANAGEMENT_CHAT_ID=oc_management_placeholder",
+          "REPORT_RECIPIENT_TYPE=open_id\nREPORT_RECIPIENT_ID=ou_admin",
+        ),
+        { mode: 0o600 },
+      );
+      const review = () =>
+        spawnSync(
+          "bash",
+          [resolve("scripts/review-recipient.sh"), "--settings", next],
+          { env: f.env, encoding: "utf8", timeout: 15000 },
+        );
+      expect(review().status).not.toBe(0);
+      execFileSync("docker", ["stop", id]);
+      expect(review().status).toBe(0);
+      expect(f.deploy().status).toBe(0);
+      expect(f.grantContent()).toBe("synthetic rotating grant");
+      expect(f.files("backups")).toHaveLength(1);
+    } finally {
+      f.close();
+    }
+  },
+  120_000,
+);
+
+acceptance(
+  "a paused production webhook deployment selects only its required Doppler secrets",
+  () => {
+    const f = fixture(true);
+    try {
+      const settings = join(f.root, "worker.env");
+      writeFileSync(
+        settings,
+        readFileSync(settings, "utf8")
+          .replace(
+            "REPORT_RECIPIENT_TYPE=open_id",
+            "REPORT_RECIPIENT_TYPE=chat_id",
+          )
+          .replace(
+            "REPORT_RECIPIENT_ID=ou_admin",
+            "REPORT_RECIPIENT_ID=oc_private_reports",
+          ) +
+          "\nAPP_MODE=production\nENABLE_OUTBOUND=true\nENABLE_DAILY_BRIEF=false\nWORKER_RESTORE_MODE=true\nREPORT_TRANSPORT=webhook\nREMINDER_TRANSPORT=webhook\n",
+        { mode: 0o600 },
+      );
+      const result = f.deploy({
+        GEMINI_API_KEY: "inherited-model-secret-canary",
+        DEEPSEEK_API_KEY: "inherited-other-secret-canary",
+      });
+      expect(result.status).toBe(0);
+      expect(
+        readFileSync(join(f.root, "secret-selection.txt"), "utf8")
+          .split(",")
+          .sort(),
+      ).toEqual([
+        "LARK_APP_SECRET",
+        "REMINDER_WEBHOOK_SIGNING_SECRET",
+        "REMINDER_WEBHOOK_URL",
+        "REPORT_WEBHOOK_SIGNING_SECRET",
+        "REPORT_WEBHOOK_URL",
+      ]);
+      const inspected = JSON.parse(
+        execFileSync("docker", ["inspect", f.containerId()], {
+          encoding: "utf8",
+        }),
+      )[0];
+      expect(inspected.Config.Env).toEqual(
+        expect.arrayContaining([
+          "REPORT_TRANSPORT=webhook",
+          "REMINDER_TRANSPORT=webhook",
+          "REPORT_WEBHOOK_SIGNING_SECRET=synthetic-report-secret",
+          "GEMINI_API_KEY=",
+          "DEEPSEEK_API_KEY=",
+        ]),
+      );
+      expect(f.grantContent()).toBe("synthetic rotating grant");
+      expect(result.stdout + result.stderr).not.toContain("secret-canary");
+    } finally {
+      f.close();
+    }
+  },
+  120_000,
 );

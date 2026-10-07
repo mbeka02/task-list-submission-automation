@@ -30,17 +30,18 @@ for name in ("task-list.sqlite", "task-list.sqlite-wal", "task-list.sqlite-shm",
         regular_private(path, 1000)
 
 required = {"LARK_APP_ID", "SOURCE_CHAT_ID", "ACTIVATION_DATE", "LARK_READER_OPEN_ID"}
-allowed = required | {"MANAGEMENT_CHAT_ID", "REPORT_RECIPIENT_TYPE", "REPORT_RECIPIENT_ID", "POLICY_VERSION", "LOG_LEVEL", "WORKER_CHECK_INTERVAL_MS", "WORKER_RESTORE_MODE"}
+allowed = required | {"APP_MODE", "ENABLE_OUTBOUND", "ENABLE_DAILY_BRIEF", "BRIEF_MODE", "BRIEF_ACTIVATION_DATE", "BRIEF_PROVIDER", "GEMINI_MODEL", "DEEPSEEK_MODEL", "BRIEF_TEMPLATE_VERSION", "BRIEF_PROMPT_VERSION", "BRIEF_SCHEMA_VERSION", "LARK_DOC_STAGING_FOLDER_TOKEN", "LARK_DOCUMENT_BASE_URL","MANAGEMENT_CHAT_ID", "REPORT_RECIPIENT_TYPE", "REPORT_RECIPIENT_ID", "REPORT_TRANSPORT", "REMINDER_TRANSPORT", "POLICY_VERSION", "LOG_LEVEL", "WORKER_CHECK_INTERVAL_MS", "WORKER_RESTORE_MODE"}
 fixed = {"APP_MODE": "preview", "ENABLE_OUTBOUND": "false", "ENABLE_DAILY_BRIEF": "false", "BUSINESS_TIMEZONE": "Africa/Nairobi"}
 values = {}
-for line in (root / "worker.env").read_text().splitlines():
+settings=Path(os.environ.get("TASK_LIST_SETTINGS_FILE", str(root/"worker.env")))
+assert settings.parent==root and settings.resolve()==settings
+regular_private(settings, os.geteuid())
+for line in settings.read_text().splitlines():
     if not line.strip() or line.lstrip().startswith("#"):
         continue
     key, separator, value = line.partition("=")
     assert separator and key not in values and key in allowed | fixed.keys()
     assert value and "\x00" not in value
-    if key in fixed:
-        assert value == fixed[key]
     values[key] = value
 assert required <= values.keys()
 
@@ -51,3 +52,28 @@ if "REPORT_RECIPIENT_TYPE" in values or "REPORT_RECIPIENT_ID" in values:
     assert re.fullmatch(pattern, values.get("REPORT_RECIPIENT_ID", ""))
 else:
     assert re.fullmatch(r"oc_[A-Za-z0-9_]+", values.get("MANAGEMENT_CHAT_ID", ""))
+
+mode=values.get("APP_MODE", "preview")
+assert mode in ("preview", "production")
+assert values.get("BUSINESS_TIMEZONE", "Africa/Nairobi")=="Africa/Nairobi"
+secrets="LARK_APP_SECRET"
+for transport in ("REPORT_TRANSPORT", "REMINDER_TRANSPORT"):
+    assert values.get(transport, "app_bot") in ("app_bot", "webhook")
+assert values.get("REPORT_TRANSPORT") != "webhook" or values.get("REPORT_RECIPIENT_TYPE") == "chat_id"
+if mode=="preview":
+    assert values.get("ENABLE_OUTBOUND", "false")=="false"
+    assert values.get("ENABLE_DAILY_BRIEF", "false")=="false"
+else:
+    assert values.get("ENABLE_OUTBOUND")=="true"
+    assert values.get("WORKER_RESTORE_MODE") in ("true", "false")
+    assert "REPORT_RECIPIENT_TYPE" in values and "MANAGEMENT_CHAT_ID" not in values
+    for prefix in ("REPORT", "REMINDER"):
+        if values.get(prefix+"_TRANSPORT") == "webhook":
+            secrets+=","+prefix+"_WEBHOOK_URL,"+prefix+"_WEBHOOK_SIGNING_SECRET"
+    assert values.get("ENABLE_DAILY_BRIEF", "false") in ("true", "false")
+    if values.get("ENABLE_DAILY_BRIEF")=="true":
+        assert values.get("BRIEF_MODE") in ("capture_only", "publish")
+        assert values.get("BRIEF_PROVIDER") in ("gemini", "deepseek")
+        if values["BRIEF_MODE"]=="publish":
+            secrets+=",GEMINI_API_KEY" if values["BRIEF_PROVIDER"]=="gemini" else ",DEEPSEEK_API_KEY"
+print(mode+" "+secrets)

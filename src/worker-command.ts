@@ -11,6 +11,7 @@ import {
   operationalEvent,
   withObservedRun,
 } from "./observability.js";
+import { configuredReportRecipient } from "./report-recipient.js";
 
 const reminderText =
   "Please post today's task list in this group by 10:00 AM Nairobi time.";
@@ -94,7 +95,7 @@ function openWorker(inspect: boolean, logger: Logger, entryPoint: EntryPoint) {
     databasePath: required("SQLITE_FILE_PATH"),
     appId,
     sourceChatId,
-    destinationChatId: required("MANAGEMENT_CHAT_ID"),
+    recipient: configuredReportRecipient(process.env),
     activationDate: required("ACTIVATION_DATE"),
     calendar: loadCalendar(required("HOLIDAY_CALENDAR_PATH")),
     policy: {

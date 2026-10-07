@@ -1,5 +1,6 @@
 import { lstatSync } from "node:fs";
 import { openReportLedger } from "./report-ledger.js";
+import { configuredReportRecipient, recipientKey } from "./report-recipient.js";
 
 /**
  * Inspect delivery state or record a reviewed outcome in the configured ledger.
@@ -37,7 +38,9 @@ function run() {
   const databasePath = process.env.SQLITE_FILE_PATH;
   const appId = process.env.LARK_APP_ID;
   const sourceChatId = process.env.SOURCE_CHAT_ID;
-  const destinationChatId = process.env.MANAGEMENT_CHAT_ID;
+  const destinationChatId = recipientKey(
+    configuredReportRecipient(process.env),
+  );
   if (
     !databasePath?.trim() ||
     !appId?.trim() ||
@@ -67,7 +70,8 @@ function run() {
         const delivery = ledger.getDelivery(values.get("--id") ?? "");
         if (
           delivery &&
-          ((delivery.kind === "report" && destination === destinationChatId) ||
+          ((["report", "brief"].includes(delivery.kind) &&
+            destination === destinationChatId) ||
             (delivery.kind === "reminder" && destination === sourceChatId))
         )
           return { ledger, delivery };

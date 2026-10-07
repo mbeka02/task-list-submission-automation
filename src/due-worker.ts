@@ -13,6 +13,10 @@ import {
   openReportLedger,
   type ReportPolicy,
 } from "./report-ledger.js";
+import {
+  type ReportRecipient,
+  scopedRecipientOptions,
+} from "./report-recipient.js";
 import { requiresRestoreReview } from "./storage-recovery.js";
 import {
   createSubmissionHistoryReader,
@@ -34,7 +38,8 @@ export interface DueWorkerOptions extends ObservabilityOptions {
   databasePath: string;
   appId: string;
   sourceChatId: string;
-  destinationChatId: string;
+  recipient?: ReportRecipient;
+  destinationChatId?: string;
   activationDate: string;
   calendar: HolidayCalendar;
   policy: Omit<
@@ -148,7 +153,8 @@ function deliveryStatus(
 }
 
 /** Coordinate reminder/report due work through the approved S5 operations. */
-export function createDueWorker(options: DueWorkerOptions) {
+export function createDueWorker(input: DueWorkerOptions) {
+  const options = scopedRecipientOptions(input);
   const briefConfigurationValid =
     !options.brief ||
     (["capture_only", "publish"].includes(options.brief.mode) &&

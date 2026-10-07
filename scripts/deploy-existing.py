@@ -17,5 +17,15 @@ environment = dict(item.split("=", 1) for item in container["Config"]["Env"])
 assert environment["APP_MODE"] == "preview" and environment["ENABLE_OUTBOUND"] == "false"
 assert container["Config"]["User"] == "1000:1000"
 settings = dict(line.split("=", 1) for line in (root / "worker.env").read_text().splitlines() if line.strip() and not line.lstrip().startswith("#"))
-for name in ("LARK_APP_ID", "SOURCE_CHAT_ID", "MANAGEMENT_CHAT_ID", "LARK_READER_OPEN_ID"):
+for name in ("LARK_APP_ID", "SOURCE_CHAT_ID", "LARK_READER_OPEN_ID"):
     assert environment[name] == settings[name]
+
+
+def recipient(values):
+    if "REPORT_RECIPIENT_TYPE" in values or "REPORT_RECIPIENT_ID" in values:
+        assert not values.get("MANAGEMENT_CHAT_ID")
+        return (values["REPORT_RECIPIENT_TYPE"], values["REPORT_RECIPIENT_ID"])
+    return ("chat_id", values["MANAGEMENT_CHAT_ID"])
+
+# A release upgrade may change configuration spelling, never the approved recipient.
+assert recipient(environment) == recipient(settings)

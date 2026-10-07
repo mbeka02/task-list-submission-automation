@@ -7,12 +7,18 @@ import {
   withTenantToken,
 } from "@larksuiteoapi/node-sdk";
 import type { DeliveryTransport, TransportOutcome } from "./report-ledger.js";
+import {
+  type ReportRecipient,
+  recipientFromKey,
+  recipientKey,
+} from "./report-recipient.js";
 
-/** Fixed app-bot credentials and explicitly permitted destination groups. */
+/** Fixed app-bot credentials and explicitly permitted group/user recipients. */
 export interface LarkDeliveryOptions {
   appId: string;
   appSecret: string;
-  allowedDestinationChatIds: readonly string[];
+  allowedDestinationChatIds?: readonly string[];
+  allowedRecipients?: readonly ReportRecipient[];
   httpInstance?: HttpInstance | typeof defaultHttpInstance;
   clock?: () => number;
 }
@@ -65,6 +71,12 @@ function rejection(value: unknown): TransportOutcome | null {
 export function createLarkDeliveryTransport(
   options: LarkDeliveryOptions,
 ): DeliveryTransport {
+  const allowed = new Set([
+    ...(options.allowedDestinationChatIds ?? []).map((id) =>
+      recipientKey({ type: "chat_id", id }),
+    ),
+    ...(options.allowedRecipients ?? []).map(recipientKey),
+  ]);
   const http = defaultHttpInstance.create({
     timeout: 15_000,
     maxRedirects: 0,
@@ -93,9 +105,10 @@ export function createLarkDeliveryTransport(
   const send: DeliveryTransport = async (request) => {
     if (
       request.appId !== options.appId ||
-      !options.allowedDestinationChatIds.includes(request.destinationChatId)
+      !allowed.has(request.destinationChatId)
     )
       return { status: "failed", reason: "outbound_scope_mismatch" };
+    const recipient = recipientFromKey(request.destinationChatId);
     // Separate credential retrieval so its failure establishes that no message POST ran.
     let accessToken: string;
     try {
@@ -149,9 +162,9 @@ export function createLarkDeliveryTransport(
     try {
       const response = await client.im.message.create(
         {
-          params: { receive_id_type: "chat_id" },
+          params: { receive_id_type: recipient.type },
           data: {
-            receive_id: request.destinationChatId,
+            receive_id: recipient.id,
             msg_type: "text",
             content: JSON.stringify({ text: request.text }),
             uuid: request.uuid,
@@ -161,11 +174,13 @@ export function createLarkDeliveryTransport(
       );
       const rejected = rejection(response);
       if (rejected) return rejected;
-      // Success requires an acknowledgement for the intended group, not merely a successful HTTP call.
+      // A user-addressed response contains the bot/user conversation ID, not the recipient open ID.
+      // Validate an acknowledged message/conversation; group sends additionally bind the exact chat.
       if (
         response.code !== 0 ||
         !response.data?.message_id ||
-        response.data.chat_id !== request.destinationChatId
+        !response.data.chat_id ||
+        (recipient.type === "chat_id" && response.data.chat_id !== recipient.id)
       )
         throw new Error("Acknowledgement unavailable");
       return { messageId: response.data.message_id };

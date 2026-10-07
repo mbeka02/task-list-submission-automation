@@ -21,6 +21,7 @@ import {
   withObservedRun,
 } from "./observability.js";
 import { type DeliveryTransport, openReportLedger } from "./report-ledger.js";
+import { scopedRecipientOptions } from "./report-recipient.js";
 import { dailyBriefs } from "./storage/schema.js";
 import { requiresRestoreReview } from "./storage-recovery.js";
 
@@ -37,7 +38,8 @@ export interface BriefCoordinatorOptions
 }
 
 /** S10 coordinates generation and optional Doc publication without persisting the brief body. */
-export function openBriefCoordinator(options: BriefCoordinatorOptions) {
+export function openBriefCoordinator(input: BriefCoordinatorOptions) {
+  const options = scopedRecipientOptions(input);
   const docs = options.docPublishing
     ? openLarkBriefDoc(options.appId, options.docPublishing)
     : null;

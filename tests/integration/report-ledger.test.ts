@@ -1845,3 +1845,43 @@ test("an incomplete or unavailable scan cannot freeze an empty report", () => {
     ledger.close();
   }
 });
+
+test("a frozen admin report survives restart without becoming visible to another recipient", () => {
+  const { destinationChatId: _legacy, ...scope } = config;
+  const database = databasePath();
+  const first = openReportLedger({
+    ...scope,
+    databasePath: database,
+    recipient: { type: "open_id", id: "ou_admin" },
+  });
+  const prepared = first.prepareDailyReport({
+    businessDate: "2026-10-01",
+    scan,
+    policy,
+  });
+  if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+  first.close();
+  const resumed = openReportLedger({
+    ...scope,
+    databasePath: database,
+    recipient: { type: "open_id", id: "ou_admin" },
+  });
+  expect(resumed.getDelivery(prepared.delivery.id)).toMatchObject({
+    id: prepared.delivery.id,
+    sendUuid: prepared.delivery.sendUuid,
+    recipient: { type: "open_id", id: "ou_admin" },
+  });
+  resumed.close();
+  for (const recipient of [
+    { type: "open_id", id: "ou_other" },
+    { type: "chat_id", id: "ou_admin" },
+  ] as const) {
+    const other = openReportLedger({
+      ...scope,
+      databasePath: database,
+      recipient,
+    });
+    expect(other.getDelivery(prepared.delivery.id)).toBeNull();
+    other.close();
+  }
+});

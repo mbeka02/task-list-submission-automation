@@ -17,10 +17,15 @@ const uuid = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
 function frozenLedger(
   transport: ReturnType<typeof createLarkDeliveryTransport>,
   clock = () => now,
+  recipient?: { type: "chat_id" | "open_id"; id: string },
 ) {
   const directory = mkdtempSync(join(tmpdir(), "task-list-delivery-"));
   const ledger = openReportLedger({
-    ...config,
+    appId: config.appId,
+    sourceChatId: config.sourceChatId,
+    ...(recipient
+      ? { recipient }
+      : { destinationChatId: config.destinationChatId }),
     databasePath: join(directory, "ledger.sqlite"),
     clock,
     transport,
@@ -430,6 +435,48 @@ test("a credential endpoint outage is a known pre-message failure and can retry 
     expect(
       JSON.stringify(fixture.ledger.getDelivery(fixture.id)),
     ).not.toContain("private upstream diagnostics");
+  } finally {
+    fixture.close();
+    await server.close();
+  }
+});
+
+test("the bot sends a frozen report to the approved user instead of a group", async () => {
+  const server = await larkHttpServer((request) => ({
+    body: request.path.includes("tenant_access_token")
+      ? tokenBody
+      : {
+          code: 0,
+          data: {
+            message_id: "om_admin_ack",
+            chat_id: "oc_bot_admin",
+            msg_type: "text",
+          },
+        },
+  }));
+  const adapter = createLarkDeliveryTransport({
+    appId: "cli_test",
+    appSecret: "synthetic-secret",
+    allowedRecipients: [{ type: "open_id", id: "ou_admin" }],
+    clock: () => now,
+    httpInstance: server.httpInstance,
+  });
+  const fixture = frozenLedger(adapter, () => now, {
+    type: "open_id",
+    id: "ou_admin",
+  });
+  try {
+    expect(
+      await fixture.ledger.deliverDelivery({ deliveryId: fixture.id, now }),
+    ).toMatchObject({ status: "sent" });
+    expect(server.requests[1]).toMatchObject({
+      query: { receive_id_type: "open_id" },
+      body: { receive_id: "ou_admin", uuid },
+    });
+    expect(fixture.ledger.getDelivery(fixture.id)).toMatchObject({
+      messageId: "om_admin_ack",
+      recipient: { type: "open_id", id: "ou_admin" },
+    });
   } finally {
     fixture.close();
     await server.close();

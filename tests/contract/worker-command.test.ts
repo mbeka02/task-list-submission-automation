@@ -348,3 +348,21 @@ test("the continuous command checks at startup and each configured minute then s
     rmSync(environment.directory, { recursive: true, force: true });
   }
 });
+
+test("worker status accepts an explicit admin recipient without a group destination or credentials", () => {
+  const environment = fixture();
+  try {
+    const result = command(environment, ["status"], {
+      MANAGEMENT_CHAT_ID: undefined,
+      REPORT_RECIPIENT_TYPE: "open_id",
+      REPORT_RECIPIENT_ID: "ou_admin",
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "ok",
+      outboundEnabled: false,
+    });
+  } finally {
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});

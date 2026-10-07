@@ -20,7 +20,7 @@ const acceptance =
   process.env.RUN_DOCKER_ACCEPTANCE === "true" ? test : test.skip;
 
 /** Substitute only external registry/secrets boundaries; every container, Compose call and SQLite operation is real. */
-function fixture() {
+function fixture(admin = false) {
   const root = mkdtempSync(join(tmpdir(), "task-list-deploy-"));
   const project = `deploy-${randomUUID()}`;
   const docker = execFileSync("which", ["docker"], { encoding: "utf8" }).trim();
@@ -41,7 +41,9 @@ function fixture() {
     [
       "LARK_APP_ID=cli_deployment_test",
       "SOURCE_CHAT_ID=oc_source_placeholder",
-      "MANAGEMENT_CHAT_ID=oc_management_placeholder",
+      ...(admin
+        ? ["REPORT_RECIPIENT_TYPE=open_id", "REPORT_RECIPIENT_ID=ou_admin"]
+        : ["MANAGEMENT_CHAT_ID=oc_management_placeholder"]),
       "ACTIVATION_DATE=2099-01-01",
       "LARK_READER_OPEN_ID=ou_synthetic_reader",
     ].join("\n"),
@@ -583,4 +585,32 @@ acceptance(
     }
   },
   120_000,
+);
+
+acceptance(
+  "preview deployment preserves an explicitly configured admin recipient on replacement",
+  () => {
+    const environment = fixture(true);
+    try {
+      const first = environment.deploy();
+      expect(first.status, first.stderr).toBe(0);
+      const replaced = environment.deploy();
+      expect(replaced.status, replaced.stderr).toBe(0);
+      const info = JSON.parse(
+        execFileSync("docker", ["inspect", environment.containerId()], {
+          encoding: "utf8",
+        }),
+      )[0];
+      expect(info.Config.Env).toEqual(
+        expect.arrayContaining([
+          "REPORT_RECIPIENT_TYPE=open_id",
+          "REPORT_RECIPIENT_ID=ou_admin",
+          "ENABLE_OUTBOUND=false",
+        ]),
+      );
+    } finally {
+      environment.close();
+    }
+  },
+  120000,
 );

@@ -1,6 +1,6 @@
 # Local release and operator guide
 
-The server currently runs a paused preview. The new production profile supports names reports and editable brief links to a private operator/admin group via a signed webhook, plus a separate source-group reminder webhook. App-bot delivery remains supported where tenant availability permits it. Local tests authorize no live send or sharing changes.
+Production is active as of 8 October 2026, with scheduled work starting 9 October: reminder 09:30, names report 10:01 and brief 10:15 Nairobi. The production profile supports names reports and operator-owned brief links to a private operator/admin group via a signed webhook, plus a separate source-group reminder webhook. App-bot delivery remains supported where tenant availability permits it. Local tests authorize no live send or sharing changes.
 
 ## Build and exercise the local image
 
@@ -326,7 +326,7 @@ Keep the deployed worker paused. This operator command requests a fresh user gra
 
 1. Set `LARK_APP_ID`, `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` and `LARK_OAUTH_SCOPES`. Obtain the app secret through the scoped Doppler config; never paste it into an argument or log. Use a dedicated credential directory, owned by the invoking user, mode 0700. The eventual container directory/file must be owned by UID/GID 1000.
 2. Request enabled user permissions required for the reader and identity check. In read-only mode the command allows `im:message.group_msg:get_as_user`, `im:message:readonly`, `im:chat:read`, `contact:user.base:readonly` and `offline_access`; `im:message:readonly` is required for the history endpoint; group-message access alone is insufficient. It adds `offline_access` for renewal. Confirm the app's enabled scopes and availability before live consent; the allowlist is not proof of permission.
-   For user-owned briefs, set `LARK_DOC_AUTH_STRATEGY=user_oauth` in the login environment and include **all five** additional scopes: `docx:document`, `docs:permission.member:retrieve`, `docs:permission.member:create`, `docs:permission.setting:read`, `docs:permission.setting:write_only`. Publish/enable these as user scopes in the app console first. They are rejected without the explicit Doc opt-in; message-send scopes remain forbidden. The user grant writes Docs, while independent bots send messages. Scope details: [official Doc creation](https://open.larksuite.com/document/server-docs/docs/docs/docx-v1/document/create).
+   For user-owned briefs, set `LARK_DOC_AUTH_STRATEGY=user_oauth` in the login environment and include **all six** additional scopes: `docs:doc`, `docx:document`, `docs:permission.member:retrieve`, `docs:permission.member:create`, `docs:permission.setting:read`, `docs:permission.setting:write_only`. Publish/enable these as user scopes in the app console first. They are rejected without the explicit Doc opt-in; message-send scopes remain forbidden. The user grant writes Docs, while independent bots send messages. The live sharing-settings APIs require the legacy `docs:doc` document grant; granular permission scopes alone are insufficient. `drive:drive:readonly` permits inspection but cannot close link sharing. No broad Drive write or message-send permission is requested. See [official sharing-settings V2](https://open.larksuite.com/document/server-docs/docs/drive-v1/permission/permission-public/get-document-sharing-settings-v2). Scope details: [official Doc creation](https://open.larksuite.com/document/server-docs/docs/docs/docx-v1/document/create).
 3. Run `pnpm worker-auth start`. Open the returned verification URL and approve as the configured reader before the stated expiry. Output contains only the URL, user code and expiry; the device code stays in a private `.login.json` file beside the credentials.
 4. Run `pnpm worker-auth finish`. It honors provider pending/slow-down intervals, verifies the returned user's open ID, and atomically creates a mode-0600 Bearer grant in the existing worker schema. The built-image equivalent is `node dist/worker-auth-command.js start|finish`. Neither command unpauses the worker or sends anything.
 
@@ -351,14 +351,14 @@ Verify every selected person, faithful work summaries, late labels and source-ba
 notes; record model/prompt/template/schema versions, actual billable usage and
 failure observations. Then verify native layout, operator owner access, reports-group viewer access, saved
 link delivery and preservation of human edits. Approve data processing before
-using employee tasks; the current Gemini free-tier demo remains synthetic only.
+using employee tasks. On 8 October the owner approved ongoing task-text processing with the current Gemini free-tier key; names and Lark IDs remain excluded from model input. A synthetic production-key check passed with `gemini-3.1-flash-lite`.
 A fixture-passing model is not yet proven cost-effective or factually reliable.
 Gemini remains the initial selected provider; DeepSeek live credentials/model
 access and processing terms need their own review before selection.
 
 The admin's manual list remains the fallback while access or the worker is unavailable.
 Both sending routes require separate activation approval after those gates pass.
-The new CLI accepts outbound only in explicit production configuration; the deployed preview remains paused.
+The new CLI accepts outbound only in explicit production configuration; the deployed production worker is active from 9 October 2026. See the [live acceptance record](DEPLOYMENT_CHECKLIST.md#live-closeout--8-october-2026).
 
 Backup and Compose behavior follow the [SQLite backup documentation](https://www.sqlite.org/backup.html)
 and [Docker Compose service reference](https://docs.docker.com/reference/compose-file/services/).

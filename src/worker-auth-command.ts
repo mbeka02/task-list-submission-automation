@@ -343,6 +343,8 @@ async function main() {
   if (!["app", "user_oauth"].includes(docStrategy))
     throw new LoginError("invalid_configuration");
   const docScopes = [
+    // Lark sharing-settings APIs require the legacy document grant as well as granular Doc scopes.
+    "docs:doc",
     "docx:document",
     "docs:permission.member:retrieve",
     "docs:permission.member:create",

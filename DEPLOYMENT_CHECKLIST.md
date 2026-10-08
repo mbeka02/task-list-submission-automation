@@ -1,7 +1,7 @@
 # Deployment checklist
 
-Working plan for **7 October 2026**. Current branch: `codex/production-activation`; earlier checklist steps record the reviewed preview deployments.
-This checklist covers deployment and debugging; no production activation has occurred.
+Working plan updated **8 October 2026**. Current branch: `codex/live-activation`; earlier checklist steps record the reviewed preview deployments.
+This checklist covers deployment and debugging. Production activation passed on 8 October; scheduled work starts 9 October. Earlier sections preserve preview-stage evidence.
 
 ## Target and verified starting point
 
@@ -211,3 +211,23 @@ Final rebuilt-image local release acceptance passed 29 checks, including both pr
 - [ ] Complete canonical OAuth renewal, key rotation and reviewed calendar activation before unpausing. No server settings or scheduled sends changed during this implementation.
 
 Final view-only regression: **506 source tests passed**, 27 optional Docker cases skipped in the source run; **29 Docker checks passed** separately. Lint, types, build and script syntax checks passed. The SQL migration adds only three nullable publication identity/access columns.
+
+### Live closeout — 8 October 2026
+
+- [x] PR #24 merged at `d90c4e6`; merged-main CI and [publisher 37738648987](https://github.com/mbeka02/task-list-submission-automation/actions/runs/37738648987) passed. Host pulled digest `sha256:0f919d875f4ecbee38dd7183ae8e5569f05331e21d1c77b0f8515a30a24915eb`; [paused production replacement 37742363735](https://github.com/mbeka02/task-list-submission-automation/actions/runs/37742363735) passed with predecessor backup `20261008T071717-3838203.sqlite`.
+- [x] Verify the reports group still contains the two intended users and its custom bot. Keep IDs private.
+- [x] Verify the operator-provided staging folder has closed link sharing, and worker-created empty Docs inherit only the operator's ownership.
+- [x] Verify `gemini-3.1-flash-lite` with one synthetic task through the production key. Ongoing employee task-text processing is owner-approved; names and Lark IDs remain outside model requests.
+- [x] Test Doppler service-token rotation: revoke the temporary probe, verify it is rejected, verify the replacement read-only production token still fetches every selected secret. Install the replacement privately and verify server-side production fetching. **Replace before 7 November 2026, 06:45 UTC.** This test does not rotate the app, model or bot signing keys.
+- [x] Owner approves activation **9 October 2026** and the remaining-2026 fixed-date calendar: 10/20 October, 12/25/26 December; weekends excluded. Installed coverage ends 31 December. Additional gazetted holidays must be added before they occur; Gazette retrieval was blocked, so no exhaustive verification is claimed.
+- [x] Finish corrected worker consent with `docs:doc`, required by the live privacy-write API. Granular settings scopes alone failed with `99991679`; read-only Drive access permits reads, not privacy changes.
+- [x] Finish the approved user-owned, closed-link, owner-managed, group-view-only synthetic Doc and exactly one reports-group bot message (webhook accepted and read back exactly once). The source-group test must not be repeated.
+- [ ] Review/merge the login-scope correction for future consent. Runtime publishing is unchanged; the already-reviewed `d90c4e6` image accepts the corrected independently provisioned grant. Its paused production deployment passed through the protected GitHub job. The scope correction affects future consent; canonical refresh and runtime Doc publishing work on this deployed image.
+- [x] Install the canonical grant with UID/GID 1000 and mode 0600 while the old worker is stopped; force one durable renewal. The workstation grant copy was removed after renewal.
+- [x] Verify the subsequent bounded source read (`complete`, 18 messages for 7 October) and unchanged Doc viewer policy after canonical renewal.
+- [x] Complete the stopped-worker recipient transition and paused production readiness check: SQLite `quick_check=ok`, private ready canonical grant, UID 1000/read-only/no-port worker, both signed webhooks and user-owned/view-only publishing verified.
+- [x] Complete [protected activation 37742716194](https://github.com/mbeka02/task-list-submission-automation/actions/runs/37742716194), retaining activation 9 October, with consistent predecessor backup `20261008T072110-3845219.sqlite`. No automatic backfill for 8 October.
+
+Off-server backups remain deferred by the owner. Local consistent upgrade snapshots remain enabled.
+
+Consent-fix verification: **508 source tests passed** (27 optional Docker cases skipped); **29 offline container checks passed** separately, including the predecessor drill. Lint/types/build pass. [Paused production deployment](https://github.com/mbeka02/task-list-submission-automation/actions/runs/37742363735) passed after owner approval. The final activation passed after owner approval. Host verification confirms active production, private ready credentials, `status=ok`, SQLite `quick_check=ok`, and all three jobs skipped for 8 October because activation begins 9 October.

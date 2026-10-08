@@ -402,7 +402,7 @@ Unknown creation requires review and never creates a replacement. A known Doc ca
 | `REMINDER_WEBHOOK_URL`, `REMINDER_WEBHOOK_SIGNING_SECRET` | Separate Doppler secrets for the source-group reminder bot |
 | `REPORT_RECIPIENT_TYPE`, `REPORT_RECIPIENT_ID` | `chat_id` + private reports-group ID; `open_id` remains supported for same-tenant app-bot recipients |
 | `LARK_APP_SECRET`, `LARK_READER_OPEN_ID`, `LARK_USER_CREDENTIAL_FILE` | Needed by login and `worker run`; separate worker user-OAuth grant under the approved app/account |
-| `LARK_OAUTH_SCOPES` | Explicit read scopes, plus the five Doc scopes when opting into user-owned publishing; `offline_access` is added automatically. See [consent setup](RUNBOOK.md#provision-the-workers-own-oauth-login) |
+| `LARK_OAUTH_SCOPES` | Explicit read scopes, plus the six Doc/sharing scopes when opting into user-owned publishing; `offline_access` is added automatically. See [consent setup](RUNBOOK.md#provision-the-workers-own-oauth-login) |
 | `HOLIDAY_CALENDAR_PATH`, `ACTIVATION_DATE`, `POLICY_VERSION` | Reviewed calendar covering activation through today, activation date and policy version |
 | `WORKER_CHECK_INTERVAL_MS` | Delay after each completed check; default `60000` |
 | `WORKER_RESTORE_MODE` | Pause work during recovery; a persistent restore marker also enforces the pause |

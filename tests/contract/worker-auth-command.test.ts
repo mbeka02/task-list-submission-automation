@@ -369,7 +369,7 @@ test("explicit user-owned Doc publishing can provision the required Doc scopes w
   const settings = {
     LARK_DOC_AUTH_STRATEGY: "user_oauth",
     LARK_OAUTH_SCOPES:
-      "im:message:readonly docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only",
+      "im:message:readonly docs:doc docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only",
     OAUTH_TEST_MODE: "doc_scopes",
   };
   try {
@@ -396,6 +396,18 @@ test.each([
     label: "incomplete Doc scopes",
     strategy: "user_oauth",
     scopes: "im:message:readonly docx:document",
+  },
+  {
+    label: "Doc publishing without legacy sharing-settings access",
+    strategy: "user_oauth",
+    scopes:
+      "im:message:readonly docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only",
+  },
+  {
+    label: "broad Drive write access with Doc opt-in",
+    strategy: "user_oauth",
+    scopes:
+      "im:message:readonly docs:doc drive:drive docx:document docs:permission.member:retrieve docs:permission.member:create docs:permission.setting:read docs:permission.setting:write_only",
   },
   {
     label: "message-send scope with Doc opt-in",

@@ -427,7 +427,7 @@ The Ubuntu host runs **one Docker Compose worker**. Docker's restart policy hand
 flowchart TB
     CI["GitHub CI<br/>Tests · lint · types · container acceptance"]:::ci
     IMAGE["Reviewed main release<br/>Tested image → public GHCR digest"]:::release
-    GATE["Preview deployment approval<br/>Restricted Tailscale + SSH identity"]:::release
+    GATE["Protected deployment approval<br/>Restricted Tailscale + SSH identity"]:::release
     HOST["Ubuntu · Docker Compose<br/>Replace one worker"]:::host
     DATA[("Private host storage<br/>SQLite · OAuth · backups")]:::data
     DOPPLER["Doppler · scoped service token<br/>App/model/webhook secrets at deployment"]:::secret
@@ -456,7 +456,7 @@ These paths survive image replacement. The container runs as UID/GID 1000 with a
 2. Run **Deploy preview** with operation `check` to verify restricted GitHub-runner connectivity. Select `deploy` with the published digest and approve the protected `preview` environment.
 3. Inspect worker status and correlated logs. Keep restore mode and outbound restrictions until live calendar, OAuth renewal, private-group webhook/Doc access and activation checks pass.
 
-**Current state:** the reviewed release is deployed as a paused preview; production/webhook activation changes are not installed yet. Corrected-scope worker consent is complete, and a bounded source-history read succeeded on the server. Live renewal remains unverified. The preview retains its test-group destination; changing to the private reports group requires a stopped-worker scope review and live webhook/Doc access acceptance. Publishing and deployment are manual workflows; merging does not activate the worker. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
+**Current state (8 October 2026):** production is active, with scheduled work starting **Friday 9 October**: source reminder **09:30**, names report **10:01**, and Gemini brief **10:15**, all in Nairobi time. Reports and brief links go to the private operator/admin group through its signed bot; the operator owns/edits each Doc and the group views it. Both bot routes, closed-link/viewer access, canonical OAuth renewal, post-renewal history reads and SQLite integrity are verified. Today’s scheduled work was skipped because it precedes activation. The production model is `gemini-3.1-flash-lite`. The reviewed calendar covers the rest of 2026; add any later gazetted holidays and extend coverage before 2027. Rotate the production Doppler service token before **7 November 2026, 06:45 UTC**. Off-server backups remain deferred. Publishing and deployment are manual workflows; merging does not deploy. The workflow/environment retains the name `preview`, while root-owned host settings select the production profile. See the [deployment checklist](DEPLOYMENT_CHECKLIST.md), [host setup and identity restrictions](deploy/README.md) and [operator runbook](RUNBOOK.md).
 
 ## Usage and operations
 

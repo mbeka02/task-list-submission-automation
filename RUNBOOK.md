@@ -1,6 +1,6 @@
 # Local release and operator guide
 
-The server currently runs a paused preview. The new production profile supports names reports and editable brief links to a private operator/admin group via a signed webhook, plus a separate source-group reminder webhook. App-bot delivery remains supported where tenant availability permits it. Local tests authorize no live send or sharing changes.
+Production is active as of 8 October 2026, with scheduled work starting 9 October: reminder 09:30, names report 10:01 and brief 10:15 Nairobi. The production profile supports names reports and operator-owned brief links to a private operator/admin group via a signed webhook, plus a separate source-group reminder webhook. App-bot delivery remains supported where tenant availability permits it. Local tests authorize no live send or sharing changes.
 
 ## Build and exercise the local image
 
@@ -358,7 +358,7 @@ access and processing terms need their own review before selection.
 
 The admin's manual list remains the fallback while access or the worker is unavailable.
 Both sending routes require separate activation approval after those gates pass.
-The new CLI accepts outbound only in explicit production configuration; the deployed preview remains paused.
+The new CLI accepts outbound only in explicit production configuration; the deployed production worker is active from 9 October 2026. See the [live acceptance record](DEPLOYMENT_CHECKLIST.md#live-closeout--8-october-2026).
 
 Backup and Compose behavior follow the [SQLite backup documentation](https://www.sqlite.org/backup.html)
 and [Docker Compose service reference](https://docs.docker.com/reference/compose-file/services/).

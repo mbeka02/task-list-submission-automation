@@ -15,7 +15,24 @@ Questions this answers:
 
 In the production Doppler configuration, set `GRAFANA_LOKI_URL`,
 `GRAFANA_LOKI_USERNAME` and `GRAFANA_LOKI_TOKEN`. The token needs `logs:write`
-for the selected Grafana Cloud stack. It belongs only to the collector.
+for the selected Grafana Cloud stack; Grafana's predefined `set:alloy-data-write`
+bundle also supplies the required telemetry access. It belongs only to the collector.
+
+## Live acceptance — 8 October 2026
+
+The separate production collector is running. An empty authenticated upload and
+the worker-event batches returned HTTP 204; acceptance observed 29 uploaded
+entries and zero dropped entries after authentication recovery. The worker's
+container ID and start time remained unchanged. No ports were published.
+
+The initial credential returned HTTP 401. The collector was stopped while it was
+corrected; its failed source-position state was preserved separately, then a
+fresh state directory reread the retained Docker history after the first valid
+credential passed. Ordinary updates retain the current state directory.
+
+Alerts are deferred by the operator. View logs through Explore using the query
+below; successful upload has been verified through the collector's HTTP outcome
+and sent-entry counters, not through a Grafana UI readback.
 
 Create `/opt/task-list-observability-settings.json` as root, mode `0600`:
 

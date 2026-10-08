@@ -1,0 +1,76 @@
+// Keep component names stable: the Docker source's persisted positions use them.
+logging {
+  level = "warn"
+  format = "json"
+}
+
+discovery.docker "worker" {
+  host = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+  filter {
+    name = "label"
+    values = ["com.docker.compose.project=SOURCE_PROJECT", "com.docker.compose.service=worker"]
+  }
+}
+
+discovery.relabel "worker" {
+  targets = discovery.docker.worker.targets
+  rule {
+    target_label = "service_name"
+    replacement = "task-list"
+  }
+  rule {
+    target_label = "environment"
+    replacement = "production"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label = "stream"
+  }
+}
+
+loki.source.docker "worker" {
+  host = "unix:///var/run/docker.sock"
+  targets = discovery.relabel.worker.output
+  // Stream metadata exists when the reader tails a line, after container discovery.
+  relabel_rules = discovery.relabel.worker.rules
+  refresh_interval = "5s"
+  forward_to = [loki.process.worker.receiver]
+}
+
+loki.process "worker" {
+  forward_to = [loki.write.grafana_cloud_loki.receiver]
+  // Stdout contains command results; only stderr contains operational Pino events.
+  stage.match {
+    selector = "{stream=\"stdout\"}"
+    action = "drop"
+    drop_counter_reason = "command_result"
+  }
+  // Keep the original JSON line; do not promote run IDs to Loki index labels.
+  stage.json {
+    expressions = {"event" = "event"}
+    drop_malformed = true
+  }
+  stage.labels {
+    values = {"event" = ""}
+  }
+  stage.match {
+    selector = "{event=\"\"}"
+    action = "drop"
+    drop_counter_reason = "not_operational_event"
+  }
+  stage.label_drop {
+    values = ["event"]
+  }
+}
+
+loki.write "grafana_cloud_loki" {
+  endpoint {
+    url = LOGS_URL
+    follow_redirects = false
+    basic_auth {
+      username = LOGS_USERNAME
+      password_file = "/etc/task-list-alloy/token"
+    }
+  }
+}

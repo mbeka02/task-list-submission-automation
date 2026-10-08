@@ -49,3 +49,6 @@ jobs:
           RELEASE_TEST_IMAGE: task-list-ci:current
         # Match the root host deploy helper; containers still run as UID 1000.
         run: sudo env "PATH=$PATH" RUN_DOCKER_ACCEPTANCE=true RELEASE_TEST_IMAGE="$RELEASE_TEST_IMAGE" pnpm exec vitest run tests/acceptance --maxWorkers=1
+
+      - name: Exercise worker-only log collection against a synthetic Loki receiver
+        run: sudo env "PATH=$PATH" RUN_DOCKER_ACCEPTANCE=true LOG_TEST_SOURCE_IMAGE=task-list-ci:current python3 tests/acceptance/log_collector_test.py

@@ -133,6 +133,80 @@ async function fixture(initialNow = Date.parse("2026-10-02T06:30:00.000Z")) {
   };
 }
 
+test("a delivered report with heading review stays visible in status and warning telemetry", async () => {
+  const now = Date.parse("2026-10-02T07:01:00.000Z");
+  const environment = await fixture(now);
+  environment.respondWith((request) =>
+    request.method === "GET"
+      ? {
+          body: {
+            code: 0,
+            data: {
+              has_more: false,
+              items: [
+                {
+                  message_id: "om_candidate",
+                  chat_id: "oc_source",
+                  msg_type: "text",
+                  create_time: String(now - 60_000),
+                  update_time: String(now - 60_000),
+                  deleted: false,
+                  updated: false,
+                  sender: {
+                    id: "ou_avery",
+                    id_type: "open_id",
+                    sender_type: "user",
+                    tenant_key: "external",
+                    sender_name: "Avery",
+                  },
+                  body: {
+                    content: JSON.stringify({
+                      text: "Today's priorities — task list\n1. Prepare drawings",
+                    }),
+                  },
+                },
+              ],
+            },
+          },
+        }
+      : undefined,
+  );
+  const logs = logCapture();
+  const worker = createDueWorker({
+    ...environment.options,
+    logger: logs.logger,
+  });
+  try {
+    expect(await worker.runDueWork({ now })).toMatchObject({
+      report: { state: "sent", headingReviewCount: 1 },
+    });
+    expect(worker.getStatus({ now: now + 60_000 })).toMatchObject({
+      report: { state: "sent", headingReviewCount: 1 },
+    });
+    expect(logs.events()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "report_frozen",
+          level: "warn",
+          entryCount: 0,
+          headingReviewCount: 1,
+        }),
+        expect.objectContaining({
+          event: "worker_check_completed",
+          level: "warn",
+          reviewRequired: true,
+          headingReviewCount: 1,
+        }),
+      ]),
+    );
+    expect(logs.text()).not.toContain("Avery");
+    expect(logs.text()).not.toContain("Prepare drawings");
+  } finally {
+    worker.close();
+    await environment.close();
+  }
+});
+
 test("a completed report can be followed from history read through acknowledgement using one run ID", async () => {
   const now = Date.parse("2026-10-02T07:01:00.000Z");
   const environment = await fixture(now);

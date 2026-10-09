@@ -559,7 +559,7 @@ export function openReportLedger(input: LedgerOptions) {
                   observedAtMs: message.observedAtMs ?? input.scan.observedAtMs,
                   normalizedText: decision.normalizedText,
                   reason: decision.reason,
-                  detectorVersion: "task-list-v2",
+                  detectorVersion: "task-list-v3",
                 },
               })
               .onConflictDoNothing()
@@ -569,7 +569,13 @@ export function openReportLedger(input: LedgerOptions) {
           const existing = getDelivery(id);
           if (existing)
             return { status: "frozen" as const, delivery: existing };
-          if (evaluation.status === "needs_review") {
+          // Only heading ambiguity can be published as an explicitly uncounted candidate.
+          const blockingReviews = evaluation.decisions.filter(
+            (decision) =>
+              decision.outcome === "review" &&
+              decision.reason !== "ambiguous_task_heading",
+          );
+          if (blockingReviews.length) {
             const evidenceVersions = messageKeys.size
               ? tx
                   .select()
@@ -584,9 +590,7 @@ export function openReportLedger(input: LedgerOptions) {
                   )
               : [];
             return blocked(
-              evaluation.decisions
-                .filter((decision) => decision.outcome === "review")
-                .map((decision) => decision.reason),
+              blockingReviews.map((decision) => decision.reason),
               evidenceVersions,
             );
           }
@@ -596,7 +600,15 @@ export function openReportLedger(input: LedgerOptions) {
             month: "long",
             year: "numeric",
           }).format(new Date(`${input.businessDate}T12:00:00.000Z`));
-          const text = `${date}\n${evaluation.entries.length ? evaluation.entries.map((entry, index) => `${index + 1}. ${entry.displayName}`).join("\n") : "No valid submissions found by the approved cutoff"}`;
+          const confirmedText = evaluation.entries.length
+            ? evaluation.entries
+                .map((entry, index) => `${index + 1}. ${entry.displayName}`)
+                .join("\n")
+            : "No valid submissions found by the approved cutoff";
+          const reviewText = evaluation.reviewEntries.length
+            ? `\n\nNeeds review (not counted)\n${evaluation.reviewEntries.map((entry, index) => `${index + 1}. ${entry.displayName} — task-list heading not recognised`).join("\n")}`
+            : "";
+          const text = `${date}\n${confirmedText}${reviewText}`;
           tx.insert(deliveries)
             .values({
               id,
@@ -612,36 +624,38 @@ export function openReportLedger(input: LedgerOptions) {
               textHash: createHash("sha256").update(text).digest("hex"),
             })
             .run();
-          evaluation.entries.forEach((entry, position) => {
-            const observationKey = keys.get(entry.evidence.observationId);
-            const version = observationKey
-              ? tx
-                  .select()
-                  .from(observations)
-                  .where(eq(observations.id, observationKey))
-                  .get()
-              : undefined;
-            if (!version) throw new Error("Source evidence unavailable");
-            tx.insert(reportEntries)
-              .values({
-                deliveryId: id,
-                position,
-                payload: {
-                  ...entry,
-                  evidence: {
-                    ...entry.evidence,
-                    observationId: version.payload.observationId,
+          [...evaluation.entries, ...evaluation.reviewEntries].forEach(
+            (entry, position) => {
+              const observationKey = keys.get(entry.evidence.observationId);
+              const version = observationKey
+                ? tx
+                    .select()
+                    .from(observations)
+                    .where(eq(observations.id, observationKey))
+                    .get()
+                : undefined;
+              if (!version) throw new Error("Source evidence unavailable");
+              tx.insert(reportEntries)
+                .values({
+                  deliveryId: id,
+                  position,
+                  payload: {
+                    ...entry,
+                    evidence: {
+                      ...entry.evidence,
+                      observationId: version.payload.observationId,
+                    },
                   },
-                },
-                observationKey,
-                senderIdentityKey: JSON.stringify([
-                  entry.senderIdentity.appId,
-                  entry.senderIdentity.tenantKey,
-                  entry.senderIdentity.openId,
-                ]),
-              })
-              .run();
-          });
+                  observationKey,
+                  senderIdentityKey: JSON.stringify([
+                    entry.senderIdentity.appId,
+                    entry.senderIdentity.tenantKey,
+                    entry.senderIdentity.openId,
+                  ]),
+                })
+                .run();
+            },
+          );
           const delivery = getDelivery(id);
           if (!delivery) throw new Error("Frozen report unavailable");
           return { status: "frozen" as const, delivery };

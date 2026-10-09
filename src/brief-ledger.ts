@@ -347,7 +347,7 @@ export function openBriefLedger(input: BriefLedgerOptions) {
                   observedAtMs: source.observedAtMs ?? input.scan.observedAtMs,
                   normalizedText: entry.normalizedText,
                   reason: "task_list",
-                  detectorVersion: "brief-task-list-v1",
+                  detectorVersion: "brief-task-list-v2",
                 },
               })
               .onConflictDoNothing()

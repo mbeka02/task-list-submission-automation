@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import { openBriefLedger } from "../../src/brief-ledger.js";
 import { openReportLedger } from "../../src/report-ledger.js";
 
 /** Existing migrated ledger and synthetic calendar; no worker credentials or live group IDs. */
@@ -499,6 +500,7 @@ test.each(["app_bot", "webhook"])(
         REPORT_WEBHOOK_SIGNING_SECRET: "report-key-canary",
         WORKER_TEST_NOW: "2026-10-02T07:15:01Z",
         WORKER_TEST_HTTP: "true",
+        WORKER_TEST_LOCALIZED_NAMES: "true",
         LARK_APP_SECRET: "synthetic-secret",
         LARK_READER_OPEN_ID: "ou_operator",
         LARK_USER_CREDENTIAL_FILE: credentialFile,
@@ -531,6 +533,46 @@ test.each(["app_bot", "webhook"])(
           documentUrl: "https://example.larksuite.com/docx/docRelease",
         },
       });
+      const recipient =
+        transport === "webhook"
+          ? { type: "chat_id" as const, id: "oc_private_reports" }
+          : { type: "open_id" as const, id: "ou_admin" };
+      const scope = {
+        databasePath: environment.databasePath,
+        appId: "cli_test",
+        sourceChatId: "oc_source",
+        recipient,
+        readOnly: true,
+      };
+      const ledger = openReportLedger(scope);
+      const briefs = openBriefLedger({
+        ...scope,
+        policy: {
+          appId: "cli_test",
+          sourceChatId: "oc_source",
+          timeZone: "Africa/Nairobi",
+          publicHolidays: [],
+          policyVersion: "task-list-v3/synthetic-cli-v1",
+        },
+        provider: "gemini",
+        model: "gemini-3.5-flash-lite",
+        templateVersion: "template-v1",
+        promptVersion: "prompt-v1",
+        schemaVersion: "schema-v1",
+      });
+      try {
+        expect(ledger.getDailyDelivery("2026-10-02", "report")?.text).toBe(
+          "2 October 2026\n1. Alice",
+        );
+        expect(
+          briefs
+            .getDailyBrief("2026-10-02")
+            ?.entries.map((entry) => entry.displayName),
+        ).toEqual(["Alice", "Bob"]);
+      } finally {
+        ledger.close();
+        briefs.close();
+      }
       expect(result.stdout + result.stderr).not.toContain("model-key-canary");
     } finally {
       rmSync(environment.directory, { recursive: true, force: true });

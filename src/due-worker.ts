@@ -129,6 +129,8 @@ function deliveryStatus(
     now >= delivery.firstAttemptMs + 55 * 60_000;
   return {
     state: delivery.state,
+    headingReviewCount: delivery.entries.filter((entry) => entry.reviewReason)
+      .length,
     deliveryId: delivery.id,
     messageId: delivery.messageId,
     attemptCount: delivery.attemptCount,
@@ -650,11 +652,19 @@ export function createDueWorker(input: DueWorkerOptions) {
           },
         });
         if (prepared.status === "frozen") {
-          operationalEvent("info", "report_frozen", {
-            businessDate: status.businessDate,
-            deliveryId: prepared.delivery.id,
-            entryCount: prepared.delivery.entries.length,
-          });
+          const headingReviewCount = prepared.delivery.entries.filter(
+            (entry) => entry.reviewReason,
+          ).length;
+          operationalEvent(
+            headingReviewCount ? "warn" : "info",
+            "report_frozen",
+            {
+              businessDate: status.businessDate,
+              deliveryId: prepared.delivery.id,
+              entryCount: prepared.delivery.entries.length - headingReviewCount,
+              headingReviewCount,
+            },
+          );
           reportIssue = null;
           // Freeze useful observed evidence, but do not auto-send yesterday's report after midnight.
           const deliveryNow = Math.max(
@@ -867,6 +877,10 @@ export function createDueWorker(input: DueWorkerOptions) {
             "reminderReviews" in result ? result.reminderReviews.total : 0,
           briefBackfillCount:
             "briefBackfill" in result ? result.briefBackfill.total : 0,
+          headingReviewCount:
+            "headingReviewCount" in result.report
+              ? result.report.headingReviewCount
+              : 0,
           reviewRequired:
             result.status !== "ok" ||
             ("reconciliationRequired" in result.reminder &&
@@ -874,6 +888,8 @@ export function createDueWorker(input: DueWorkerOptions) {
             ("reconciliationRequired" in result.report &&
               result.report.reconciliationRequired) ||
             result.brief.state === "review_required" ||
+            ("headingReviewCount" in result.report &&
+              result.report.headingReviewCount > 0) ||
             ("backfill" in result && result.backfill.total > 0) ||
             ("reminderReviews" in result && result.reminderReviews.total > 0) ||
             ("briefBackfill" in result && result.briefBackfill.total > 0),

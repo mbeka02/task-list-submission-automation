@@ -231,6 +231,7 @@ const numericFields = new Set([
   "totalTokens",
   "backfillCount",
   "reviewCount",
+  "headingReviewCount",
   "briefBackfillCount",
 ]);
 const categoryFields = new Set([

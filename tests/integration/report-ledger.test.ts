@@ -15,6 +15,183 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
+test("heading-only uncertainty is delivered separately and frozen across restart", async () => {
+  const path = databasePath();
+  const ambiguous = {
+    ...observation,
+    observationId: "obs_avery",
+    messageId: "om_avery",
+    sender: { ...observation.sender, openId: "ou_avery", displayName: "Avery" },
+    content: JSON.stringify({
+      text: "Today's priorities — task list\n1. Prepare drawings",
+    }),
+  };
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+  });
+  const prepared = ledger.prepareDailyReport({
+    businessDate: "2026-10-01",
+    policy,
+    scan: { ...scan, messages: [observation, ambiguous] },
+  });
+  expect(prepared.status).toBe("frozen");
+  if (prepared.status !== "frozen") {
+    ledger.close();
+    throw new Error("Expected frozen report");
+  }
+  const id = prepared.delivery.id;
+  expect(prepared.delivery.text).toBe(
+    "1 October 2026\n1. Anthony\n\nNeeds review (not counted)\n1. Avery — task-list heading not recognised",
+  );
+  expect(prepared.delivery.entries).toEqual([
+    expect.objectContaining({ displayName: "Anthony" }),
+    expect.objectContaining({
+      displayName: "Avery",
+      reviewReason: "ambiguous_task_heading",
+      evidence: expect.objectContaining({ messageId: "om_avery" }),
+    }),
+  ]);
+  ledger.close();
+  const sent: string[] = [];
+  const recovered = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => now,
+    transport: async (request) => {
+      sent.push(request.text);
+      return { messageId: "om_report" };
+    },
+  });
+  try {
+    expect(
+      await recovered.deliverDelivery({ deliveryId: id, now }),
+    ).toMatchObject({ status: "sent" });
+    expect(
+      await recovered.deliverDelivery({ deliveryId: id, now: now + 60_000 }),
+    ).toMatchObject({ status: "not_sent" });
+    expect(sent).toEqual([prepared.delivery.text]);
+    expect(recovered.getDelivery(id)?.entries[1]).toMatchObject({
+      displayName: "Avery",
+      reviewReason: "ambiguous_task_heading",
+      observation: expect.objectContaining({ messageId: "om_avery" }),
+    });
+  } finally {
+    recovered.close();
+  }
+});
+
+test.each(["identity", "name", "account_label"])(
+  "heading-only uncertainty cannot bypass unresolved %s",
+  (missing) => {
+    const ledger = openReportLedger({
+      ...config,
+      databasePath: databasePath(),
+      clock: () => now,
+    });
+    try {
+      const ambiguous = {
+        ...observation,
+        observationId: "obs_candidate",
+        messageId: "om_candidate",
+        sender: {
+          type: "user",
+          tenantKey: "tenant_external",
+          ...(missing === "identity" ? {} : { openId: "ou_candidate" }),
+          ...(missing === "name"
+            ? {}
+            : {
+                displayName:
+                  missing === "account_label" ? "user123456" : "Avery",
+              }),
+        },
+        content: JSON.stringify({
+          text: "Today's priorities — task list\n1. Prepare drawings",
+        }),
+      };
+      expect(
+        ledger.prepareDailyReport({
+          businessDate: "2026-10-01",
+          policy,
+          scan: { ...scan, messages: [observation, ambiguous] },
+        }),
+      ).toMatchObject({
+        status: "blocked",
+        reasons: [
+          missing === "identity" ? "unresolved_identity" : "unresolved_name",
+        ],
+      });
+      expect(ledger.getDailyDelivery("2026-10-01", "report")).toBeNull();
+    } finally {
+      ledger.close();
+    }
+  },
+);
+
+test("an unrecognised heading without any non-empty task still blocks preparation", () => {
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: databasePath(),
+    clock: () => now,
+  });
+  try {
+    const incomplete = {
+      ...observation,
+      observationId: "obs_incomplete",
+      messageId: "om_incomplete",
+      sender: {
+        ...observation.sender,
+        openId: "ou_avery",
+        displayName: "Avery",
+      },
+      content: JSON.stringify({ text: "Today's priorities — task list\n1." }),
+    };
+    expect(
+      ledger.prepareDailyReport({
+        businessDate: "2026-10-01",
+        policy,
+        scan: { ...scan, messages: [observation, incomplete] },
+      }),
+    ).toMatchObject({ status: "blocked", reasons: ["incomplete_task_list"] });
+    expect(ledger.getDailyDelivery("2026-10-01", "report")).toBeNull();
+  } finally {
+    ledger.close();
+  }
+});
+
+test("confirmed senders are not duplicated by their ambiguous follow-up messages", () => {
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: databasePath(),
+    clock: () => now,
+  });
+  try {
+    const ambiguous = {
+      ...observation,
+      observationId: "obs_followup",
+      messageId: "om_followup",
+      content: JSON.stringify({
+        text: "Can you check my task list?\n1. Review infrastructure",
+      }),
+    };
+    const prepared = ledger.prepareDailyReport({
+      businessDate: "2026-10-01",
+      policy,
+      scan: { ...scan, messages: [ambiguous, observation] },
+    });
+    expect(prepared).toMatchObject({
+      status: "frozen",
+      delivery: {
+        text: "1 October 2026\n1. Anthony",
+        entries: [expect.objectContaining({ displayName: "Anthony" })],
+      },
+    });
+  } finally {
+    ledger.close();
+  }
+});
+
 test("a temporarily rejected delivery retries its frozen payload after restart and records the acknowledgement", async () => {
   const path = databasePath();
   const requests: unknown[] = [];

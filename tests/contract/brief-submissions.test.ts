@@ -45,6 +45,61 @@ const task = {
   },
 };
 
+test("English sender names do not require a single-language post to use an English envelope", async () => {
+  const server = await larkHttpServer(() => ({
+    body: {
+      code: 0,
+      data: {
+        has_more: false,
+        items: [
+          {
+            ...task,
+            create_time: String(Date.parse("2026-10-05T06:45:00Z")),
+            msg_type: "post",
+            sender: {
+              ...task.sender,
+              sender_name: "user123456",
+              sender_i18n_names: { en_us: "Alice" },
+            },
+            body: {
+              content: JSON.stringify({
+                zh_cn: {
+                  title: "Task list",
+                  content: [[{ tag: "text", text: "1. Review the budget" }]],
+                },
+              }),
+            },
+          },
+        ],
+      },
+    },
+  }));
+  try {
+    const scan = await createBriefSubmissionReader({
+      ...config,
+      httpInstance: server.httpInstance,
+    }).readBriefSubmissions({ businessDate });
+    expect(scan).toMatchObject({
+      status: "complete",
+      entries: [
+        expect.objectContaining({
+          displayName: "Alice",
+          normalizedText: "Task list\n1. Review the budget",
+          timeliness: "on_time",
+        }),
+      ],
+    });
+    expect(
+      evaluateSubmissions({ businessDate, policy, messages: scan.messages }),
+    ).toMatchObject({
+      status: "ready",
+      entries: [expect.objectContaining({ displayName: "Alice" })],
+    });
+  } finally {
+    await server.close();
+  }
+});
+
 test("a 10:07 task list is late in the brief and excluded from the names report", async () => {
   const server = await larkHttpServer(() => ({
     body: { code: 0, data: { has_more: false, items: [task] } },

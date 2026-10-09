@@ -109,7 +109,11 @@ if (process.env.WORKER_TEST_HTTP === "true") {
               id_type: "open_id",
               sender_type: "user",
               tenant_key: "synthetic_external_tenant",
-              sender_name: name,
+              sender_name:
+                process.env.WORKER_TEST_LOCALIZED_NAMES === "true"
+                  ? `user${name === "Alice" ? "123456" : "654321"}`
+                  : name,
+              sender_i18n_names: { en_us: name },
             },
             body: {
               content: JSON.stringify({ text: `Task list\n1. ${task}` }),

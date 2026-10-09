@@ -54,6 +54,8 @@ export interface SubmissionEntry {
   senderIdentity: { appId: string; tenantKey: string; openId: string };
   displayName: string;
   evidence: { observationId: string; messageId: string };
+  /** Saved separately from confirmed submitters; never counted as a valid task list. */
+  reviewReason?: "ambiguous_task_heading";
 }
 
 /** Classification of one input observation, including its exclusion or review reason. */
@@ -92,6 +94,8 @@ export interface SubmissionDecision {
 export interface SubmissionEvaluation {
   status: "ready" | "needs_review" | "not_working_day";
   entries: SubmissionEntry[];
+  /** Distinct identified candidates for the names report's non-blocking review section. */
+  reviewEntries: SubmissionEntry[];
   decisions: SubmissionDecision[];
 }
 
@@ -106,9 +110,12 @@ function resolveName(
   const localized = policy.preferredLocale
     ? message.sender.localizedNames?.[policy.preferredLocale]?.trim()
     : undefined;
+  // Lark's auto-generated account labels are present strings, but not resolved names.
+  const readable = (name: string | undefined) =>
+    name && !/^user\d+$/i.test(name) ? name : undefined;
   return (
-    localized ||
-    message.sender.displayName?.trim() ||
+    readable(localized) ||
+    readable(message.sender.displayName?.trim()) ||
     policy.verifiedAliases
       ?.find(
         (alias) =>
@@ -139,11 +146,10 @@ function plainText(
     // Without a preferred locale, only a single translation is unambiguous.
     if (!("content" in value)) {
       const localized = Object.entries(value);
-      value = locale
-        ? localized.find(([key]) => key === locale)?.[1]
-        : localized.length === 1
-          ? localized[0]?.[1]
-          : null;
+      // Name preference must not reject a post with only one unambiguous translation.
+      value =
+        (locale ? localized.find(([key]) => key === locale)?.[1] : undefined) ??
+        (localized.length === 1 ? localized[0]?.[1] : null);
       if (typeof value !== "object" || value === null) return null;
     }
     if (
@@ -321,7 +327,8 @@ function evaluateCurrentObservations(
         String.raw`^(?:(?:my|our|today's|[\p{L}\p{N} ._-]+'s|[\p{L}\p{N}._-]+s)\s+)?`,
         String.raw`(?:(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)(?:'s)?\s+)?`,
         String.raw`(?:to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list|do\s+list)\s*[.:]?`,
-        String.raw`(?:[ \t]+(?:-[ \t]*)?\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?)?`,
+        // Heading dates are decoration; original send time alone controls the business date.
+        String.raw`(?:[ \t]+(?:-[ \t]*)?(?:\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?|\d{1,2}([/.-])\d{1,2}\1\d{4}|\d{4}-\d{2}-\d{2}))?`,
         String.raw`[ \t]*(?:\n|$)`,
       ].join(""),
       "iu",
@@ -346,8 +353,7 @@ function evaluateCurrentObservations(
             : "thread_policy_unconfirmed",
       };
     if (
-      heading &&
-      item &&
+      ((heading && item) || (!heading && candidate)) &&
       (!message.sender.openId?.trim() || !message.sender.tenantKey?.trim())
     )
       return {
@@ -357,7 +363,10 @@ function evaluateCurrentObservations(
         outcome: "review",
         reason: "unresolved_identity",
       };
-    if (heading && item && !resolveName(message, input.policy))
+    if (
+      ((heading && item) || (!heading && candidate)) &&
+      !resolveName(message, input.policy)
+    )
       return {
         observationId: message.observationId,
         messageId: message.messageId,
@@ -381,7 +390,9 @@ function evaluateCurrentObservations(
           ? "task_list"
           : "incomplete_task_list"
         : candidate
-          ? "ambiguous_task_heading"
+          ? item
+            ? "ambiguous_task_heading"
+            : "incomplete_task_list"
           : "not_task_list",
     };
   });
@@ -414,6 +425,35 @@ function evaluateCurrentObservations(
       seen.add(key);
       return true;
     });
+  // A confirmed submission takes precedence over another ambiguous post from that sender.
+  const reviewSeen = new Set(seen);
+  const reviewEntries = input.messages
+    .map((message, index) => ({ message, decision: decisions[index] }))
+    .filter(({ decision }) => decision?.reason === "ambiguous_task_heading")
+    .sort(
+      (a, b) =>
+        a.message.createdMs - b.message.createdMs ||
+        a.message.messageId.localeCompare(b.message.messageId),
+    )
+    .flatMap<SubmissionEntry>(({ message }) => {
+      const { tenantKey, openId } = message.sender;
+      const displayName = resolveName(message, input.policy);
+      if (!tenantKey || !openId || !displayName) return [];
+      const key = JSON.stringify([message.appId, tenantKey, openId]);
+      if (reviewSeen.has(key)) return [];
+      reviewSeen.add(key);
+      return [
+        {
+          senderIdentity: { appId: message.appId, tenantKey, openId },
+          displayName,
+          evidence: {
+            observationId: message.observationId,
+            messageId: message.messageId,
+          },
+          reviewReason: "ambiguous_task_heading",
+        },
+      ];
+    });
   // Review issues block readiness even when other messages produced valid entries.
   return {
     status: nonWorking
@@ -422,6 +462,7 @@ function evaluateCurrentObservations(
         ? "needs_review"
         : "ready",
     decisions,
+    reviewEntries,
     entries: selected.flatMap<SubmissionEntry>(({ message }) => {
       const { tenantKey, openId } = message.sender;
       const displayName = resolveName(message, input.policy);

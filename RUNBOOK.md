@@ -231,11 +231,12 @@ read/preparation failure; a separate status command cannot recover transient rea
 diagnostics from a past process. Missing/invalid calendar, credentials or storage
 must not be treated as a valid zero-submission day.
 
-On ambiguous content/name, confirm the source message and sender with the operator/admin.
+Heading-only uncertainty no longer blocks the names report: inspect its **Needs review (not counted)** section and `report.headingReviewCount`. These candidates are frozen with their source evidence and are not confirmed submissions. The brief still waits for resolved content. A confirmed submission supersedes ambiguous messages from the same sender.
+
+On incomplete content, unresolved identity/name or incomplete history, confirm the source message and sender with the operator/admin.
 Fix the source or approved alias/policy through a reviewed change, then rerun an
 unfrozen date. Names are display data; different scoped IDs are distinct people.
-The full-minute cutoff uses policy `task-list-v2`; select that version in existing
-configuration when adopting this rule. Earlier frozen reports retain their saved
+The full-minute cutoff was introduced in `task-list-v2`. Select `POLICY_VERSION=task-list-v3` when deploying numeric heading dates, non-blocking heading review and English platform names. The worker does not change existing explicit policy settings automatically. Earlier frozen reports retain their saved
 cutoff, policy and payload. Do not edit frozen report text, evidence, IDs or UUIDs
 by hand. Corrections and dated
 backfill publication are deferred to separately agreed interfaces.

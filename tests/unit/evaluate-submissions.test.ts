@@ -28,6 +28,31 @@ const policy: SubmissionInput["policy"] = {
   timeZone: "Africa/Nairobi",
   publicHolidays: [],
 };
+
+test.each([
+  "Avery’s TODO List – 09/10/2026",
+  "TODO list 9/10/2026",
+  "Task list: 09-10-2026",
+  "To Do List - 2026-10-09",
+  "To-Do List 09.10.2026",
+])("numeric heading dates are display data: %s", (heading) => {
+  const result = evaluate([
+    {
+      ...message,
+      messageType: "post",
+      content: JSON.stringify({
+        title: "",
+        content: [
+          [{ tag: "text", text: heading, style: ["bold"] }],
+          [{ tag: "text", text: "1. Review infrastructure" }],
+        ],
+      }),
+    },
+  ]);
+  expect(result.status).toBe("ready");
+  expect(result.entries).toHaveLength(1);
+  expect(result.decisions[0]?.reason).toBe("task_list");
+});
 function evaluate(
   messages: readonly SubmissionObservation[],
   businessDate = "2026-10-01",
@@ -39,6 +64,33 @@ function evaluate(
     messages,
   });
 }
+
+test("generic platform account labels require a verified name, never a self-written heading", () => {
+  const generic = {
+    ...message,
+    sender: { ...message.sender, displayName: "user123456" },
+    content: JSON.stringify({
+      text: "Avery’s To Do List\n1. Review infrastructure",
+    }),
+  };
+  expect(evaluate([generic])).toMatchObject({
+    status: "needs_review",
+    entries: [],
+    decisions: [expect.objectContaining({ reason: "unresolved_name" })],
+  });
+  expect(
+    evaluate([generic], "2026-10-01", {
+      verifiedAliases: [
+        {
+          appId: "cli_test",
+          tenantKey: "tenant_external",
+          openId: "ou_anthony",
+          displayName: "Verified name",
+        },
+      ],
+    }).entries.map((entry) => entry.displayName),
+  ).toEqual(["Verified name"]);
+});
 
 test.each(["TO   DO LIST", "to  do List", "To\tDo list", "to  do"])(
   "extra horizontal spacing still qualifies as a task-list heading: %s",

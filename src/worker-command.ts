@@ -222,7 +222,9 @@ function openWorker(inspect: boolean, logger: Logger, entryPoint: EntryPoint) {
     activationDate: required("ACTIVATION_DATE"),
     calendar: loadCalendar(required("HOLIDAY_CALENDAR_PATH")),
     policy: {
-      policyVersion: process.env.POLICY_VERSION ?? "task-list-v2",
+      policyVersion: process.env.POLICY_VERSION ?? "task-list-v3",
+      // English platform names avoid generic userNNNNNN account labels in both outputs.
+      preferredLocale: "en_us",
       replyPolicy: "exclude",
     },
     reminderText,

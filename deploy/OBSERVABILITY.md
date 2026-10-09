@@ -88,10 +88,10 @@ Filter an execution or errors:
 
 ```logql
 {service_name="task-list", environment="production"} | json | runId="COPY_RUN_ID"
-{service_name="task-list", environment="production"} | json | level >= 50
+{service_name="task-list", environment="production"} | json | level=~"error|fatal"
 ```
 
-Pino uses numeric levels: `30` info, `40` warn, `50` error, `60` fatal.
+The application's Pino formatter emits **string** levels: `info`, `warn`, `error`, `fatal`. For attention filters use `| level=~"warn|error|fatal"`, not a numeric comparison. `headingReviewCount` and `reviewRequired` keep uncounted names-report candidates visible after successful delivery.
 The integration's default Docker dashboard may expect `job="integrations/docker"`;
 these intentionally scoped labels are best queried through Explore or a custom
 worker dashboard.

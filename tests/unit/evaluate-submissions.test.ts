@@ -14,7 +14,7 @@ const message: SubmissionObservation = {
     type: "user",
     openId: "ou_anthony",
     tenantKey: "tenant_external",
-    displayName: "Anthony Mbeka",
+    displayName: "Alex Example",
   },
   createdMs: Date.parse("2026-10-01T06:55:00.000Z"),
   updatedMs: Date.parse("2026-10-01T06:55:00.000Z"),
@@ -185,7 +185,7 @@ test("a possessive weekday and separated date may decorate a task-list heading",
   ]);
   expect(result.status).toBe("ready");
   expect(result.entries.map((entry) => entry.displayName)).toEqual([
-    "Anthony Mbeka",
+    "Alex Example",
   ]);
 });
 
@@ -264,7 +264,7 @@ test("a task-list heading cannot replace the platform sender identity", () => {
           type: "user",
           openId: "ou_anthony",
           tenantKey: "tenant_external",
-          displayName: "Anthony Mbeka",
+          displayName: "Alex Example",
         },
         createdMs: Date.parse("2026-10-01T06:55:00.000Z"),
         updatedMs: Date.parse("2026-10-01T06:55:00.000Z"),
@@ -284,7 +284,7 @@ test("a task-list heading cannot replace the platform sender identity", () => {
         tenantKey: "tenant_external",
         openId: "ou_anthony",
       },
-      displayName: "Anthony Mbeka",
+      displayName: "Alex Example",
       evidence: { observationId: "obs_anthony_1", messageId: "om_anthony_1" },
     },
   ]);
@@ -388,7 +388,7 @@ test("server localized names take priority and aliases are verified against the 
         ...message,
         sender: {
           ...message.sender,
-          localizedNames: { en_us: "Anthony Localized" },
+          localizedNames: { en_us: "Alex Localized" },
         },
       },
       {
@@ -408,7 +408,7 @@ test("server localized names take priority and aliases are verified against the 
         sender: {
           ...message.sender,
           openId: "ou_other",
-          displayName: "Anthony Localized",
+          displayName: "Alex Localized",
         },
       },
     ],
@@ -426,9 +426,9 @@ test("server localized names take priority and aliases are verified against the 
     },
   );
   expect(result.entries.map((entry) => entry.displayName)).toEqual([
-    "Anthony Localized",
+    "Alex Localized",
     "Verified Colleague",
-    "Anthony Localized",
+    "Alex Localized",
   ]);
   expect(result.entries.map((entry) => entry.senderIdentity.tenantKey)).toEqual(
     ["tenant_external", "tenant_second", "tenant_external"],
@@ -449,7 +449,7 @@ test("missing platform identity or name is a visible review issue", () => {
       ...message,
       sender: {
         type: "user",
-        displayName: "Anthony Mbeka",
+        displayName: "Alex Example",
         openId: "ou_anthony",
       },
     },
@@ -457,7 +457,7 @@ test("missing platform identity or name is a visible review issue", () => {
       ...message,
       sender: {
         type: "user",
-        displayName: "Anthony Mbeka",
+        displayName: "Alex Example",
         tenantKey: "tenant_external",
       },
     },
@@ -639,7 +639,7 @@ test("a quoted task list in conversation needs review rather than counting the s
 });
 
 test.each([
-  "Anthony’s To–Do:\r\n• Check backups",
+  "Alex’s To–Do:\r\n• Check backups",
   "ToDo List\n1.Check backups",
   "To do list:\n(1) Check backups",
   "Task list\n- Check backups",

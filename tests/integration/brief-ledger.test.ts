@@ -323,7 +323,7 @@ test("reuses names-report evidence and independently adds late membership withou
       displayName: "Bob",
       timeliness: "late",
       observation: {
-        detectorVersion: "brief-task-list-v2",
+        detectorVersion: "brief-task-list-v3",
         reason: "task_list",
       },
     });

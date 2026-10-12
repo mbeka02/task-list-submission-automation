@@ -559,7 +559,7 @@ export function openReportLedger(input: LedgerOptions) {
                   observedAtMs: message.observedAtMs ?? input.scan.observedAtMs,
                   normalizedText: decision.normalizedText,
                   reason: decision.reason,
-                  detectorVersion: "task-list-v3",
+                  detectorVersion: "task-list-v4",
                 },
               })
               .onConflictDoNothing()

@@ -29,6 +29,59 @@ const policy: SubmissionInput["policy"] = {
   publicHolidays: [],
 };
 
+test("a recognised heading accepts plain daily task lines before a weekly plan", () => {
+  const result = evaluate([
+    {
+      ...message,
+      content: JSON.stringify({
+        text: "Avery’s To-Do List\n\nAttend the team meeting.\nPrepare drawings.\n\nWeekly Plan\nReview proposals.",
+      }),
+    },
+  ]);
+  expect(result).toMatchObject({
+    status: "ready",
+    entries: [expect.objectContaining({ displayName: "Alex Example" })],
+    decisions: [expect.objectContaining({ reason: "task_list" })],
+  });
+});
+
+test.each([
+  "Task list\n12th October 2026",
+  "Task list\n12/10/2026",
+  "Task list\n2026-10-12",
+  "Task list\n\nWeekly Plan\nPrepare drawings next week.",
+  "Task list\n\nNotes:",
+])("metadata cannot replace an empty daily task list: %s", (text) => {
+  const result = evaluate([{ ...message, content: JSON.stringify({ text }) }]);
+  expect(result).toMatchObject({
+    status: "needs_review",
+    entries: [],
+    decisions: [expect.objectContaining({ reason: "incomplete_task_list" })],
+  });
+});
+
+test("HTML paragraph-wrapped text preserves heading and plain task lines", () => {
+  const result = evaluate([
+    {
+      ...message,
+      content: JSON.stringify({
+        text: "<p>To do list</p><p>Prepare drawings.</p><p>Review proposals.</p><p>Weekly plan </p><p>Arrange next week's review.</p>",
+      }),
+    },
+  ]);
+  expect(result).toMatchObject({
+    status: "ready",
+    entries: [expect.objectContaining({ displayName: "Alex Example" })],
+    decisions: [
+      expect.objectContaining({
+        reason: "task_list",
+        normalizedText:
+          "To do list\nPrepare drawings.\nReview proposals.\nWeekly plan \nArrange next week's review.",
+      }),
+    ],
+  });
+});
+
 test.each([
   "Avery’s TODO List – 09/10/2026",
   "TODO list 9/10/2026",

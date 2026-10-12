@@ -15,6 +15,68 @@ afterEach(() => {
     rmSync(directory, { recursive: true, force: true });
 });
 
+test("plain task lines compile later the same day and retain one frozen delivery", async () => {
+  const path = databasePath();
+  const later = Date.parse("2026-10-01T07:30:00.000Z");
+  const ledger = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => later,
+  });
+  const prepared = ledger.prepareDailyReport({
+    businessDate: "2026-10-01",
+    policy,
+    scan: {
+      ...scan,
+      observedAtMs: later,
+      messages: [
+        {
+          ...observation,
+          content: JSON.stringify({
+            text: "My task list\n\nPrepare drawings.\nReview proposals.",
+          }),
+        },
+      ],
+    },
+  });
+  ledger.close();
+  expect(prepared).toMatchObject({
+    status: "frozen",
+    delivery: {
+      text: "1 October 2026\n1. Anthony",
+      entries: [expect.objectContaining({ displayName: "Anthony" })],
+    },
+  });
+  if (prepared.status !== "frozen") throw new Error("Expected frozen report");
+  const sent: string[] = [];
+  const recovered = openReportLedger({
+    ...config,
+    databasePath: path,
+    clock: () => later,
+    transport: async (request) => {
+      sent.push(request.text);
+      return { messageId: "om_plain_report" };
+    },
+  });
+  try {
+    expect(
+      await recovered.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: later,
+      }),
+    ).toMatchObject({ status: "sent" });
+    expect(
+      await recovered.deliverDelivery({
+        deliveryId: prepared.delivery.id,
+        now: later + 60_000,
+      }),
+    ).toMatchObject({ status: "not_sent" });
+    expect(sent).toEqual(["1 October 2026\n1. Anthony"]);
+  } finally {
+    recovered.close();
+  }
+});
+
 test("heading-only uncertainty is delivered separately and frozen across restart", async () => {
   const path = databasePath();
   const ambiguous = {

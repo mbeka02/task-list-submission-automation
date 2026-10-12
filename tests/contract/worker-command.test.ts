@@ -552,7 +552,7 @@ test.each(["app_bot", "webhook"])(
           sourceChatId: "oc_source",
           timeZone: "Africa/Nairobi",
           publicHolidays: [],
-          policyVersion: "task-list-v3/synthetic-cli-v1",
+          policyVersion: "task-list-v4/synthetic-cli-v1",
         },
         provider: "gemini",
         model: "gemini-3.5-flash-lite",

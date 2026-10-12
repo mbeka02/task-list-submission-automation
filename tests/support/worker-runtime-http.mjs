@@ -41,7 +41,7 @@ if (process.env.WORKER_TEST_HTTP === "true") {
       return { code: 1063002 };
     if (path.startsWith("/open-apis/bot/v2/hook/")) {
       const reminder = body?.content?.text?.startsWith(
-        "Please post today's task list",
+        "Good morning! Please post your tasks",
       );
       const expected = reminder
         ? "bbbbbbbb-1111-4111-8111-bbbbbbbbbbbb"

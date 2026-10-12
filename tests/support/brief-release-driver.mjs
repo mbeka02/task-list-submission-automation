@@ -212,7 +212,7 @@ try {
     ),
     policy: { policyVersion: "synthetic-policy-v1", replyPolicy: "exclude" },
     reminderText:
-      "Please post today's task list in this group by 10:00 AM Nairobi time.",
+      "Good morning! Please post your tasks for the day by 10:00 AM.",
     clock: Date.now,
     reader: {
       appId,

@@ -195,25 +195,31 @@ function plainText(
   }
 }
 
-/** Plain task text must follow the opening heading; dates and later section labels are not tasks. */
-function hasPlainTaskLine(text: string): boolean {
-  for (const row of text.split("\n").slice(1)) {
+/** Inspect daily items before later sections; only recognised headings allow unmarked text. */
+function hasTaskItem(text: string, recognisedHeading: boolean): boolean {
+  const rows = text.split("\n");
+  for (const row of recognisedHeading ? rows.slice(1) : rows) {
     const line = row.trim();
-    if (
-      /^(?:weekly\s+(?:plan|to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list)|notes?)\s*[:.]?$/i.test(
-        line,
+    if (recognisedHeading) {
+      if (
+        /^(?:weekly\s+(?:plan|to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list)|notes?)\s*[:.]?$/i.test(
+          line,
+        )
       )
-    )
-      return false;
-    if (
-      /^\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?[.:]?$/i.test(
-        line,
+        return false;
+      if (
+        /^\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?[.:]?$/i.test(
+          line,
+        )
       )
-    )
-      continue;
-    if (/^(?:\d{1,2}([/.-])\d{1,2}\1\d{4}|\d{4}-\d{2}-\d{2})[.:]?$/.test(line))
-      continue;
-    if (/\p{L}/u.test(line)) return true;
+        continue;
+      if (
+        /^(?:\d{1,2}([/.-])\d{1,2}\1\d{4}|\d{4}-\d{2}-\d{2})[.:]?$/.test(line)
+      )
+        continue;
+    }
+    if (/^(?:\d+[.):]|\(\d+\)|[-*•])[ \t]*\S/.test(line)) return true;
+    if (recognisedHeading && /\p{L}/u.test(line)) return true;
   }
   return false;
 }
@@ -361,12 +367,7 @@ function evaluateCurrentObservations(
       ].join(""),
       "iu",
     ).test(normalizedText);
-    const markedItem = /(?:^|\n)[ \t]*(?:\d+[.):]|\(\d+\)|[-*•])[ \t]*\S/.test(
-      normalizedText,
-    );
-    // Unmarked lines require a recognised opening heading; loose mentions still need markers.
-    const plainItem = heading && hasPlainTaskLine(normalizedText);
-    const item = markedItem || plainItem;
+    const item = hasTaskItem(normalizedText, heading);
     if (
       candidate &&
       message.rootMessageId &&

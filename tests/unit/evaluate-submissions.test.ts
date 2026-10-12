@@ -50,6 +50,8 @@ test.each([
   "Task list\n12/10/2026",
   "Task list\n2026-10-12",
   "Task list\n\nWeekly Plan\nPrepare drawings next week.",
+  "Task list\n\nWeekly Plan\n1. Prepare drawings next week.",
+  "Task list\n\nNotes:\n- Review proposals next week.",
   "Task list\n\nNotes:",
 ])("metadata cannot replace an empty daily task list: %s", (text) => {
   const result = evaluate([{ ...message, content: JSON.stringify({ text }) }]);

@@ -11,7 +11,7 @@ import { larkHttpServer } from "../support/lark-http-server.js";
 import { logCapture } from "../support/log-capture.js";
 
 const reminderText =
-  "Please post today's task list in this group by 10:00 AM Nairobi time.";
+  "Good morning! Please post your tasks for the day by 10:00 AM.";
 
 /** Real SDK and SQLite fixture; only provider HTTP and the business clock are controlled. */
 async function fixture(initialNow = Date.parse("2026-10-02T06:30:00.000Z")) {

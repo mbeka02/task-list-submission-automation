@@ -18,7 +18,7 @@ import {
 import { configuredReportRecipient } from "./report-recipient.js";
 
 const reminderText =
-  "Please post today's task list in this group by 10:00 AM Nairobi time.";
+  "Good morning! Please post your tasks for the day by 10:00 AM.";
 
 /** Require scope/configuration explicitly; never include a missing field's value in an error. */
 function required(name: string): string {

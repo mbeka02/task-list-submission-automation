@@ -107,7 +107,7 @@ test("worker emits correlated JSON telemetry on stderr without changing its stdo
     );
     expect(new Set(events.map((event) => event.runId)).size).toBe(1);
     expect(result.stderr).not.toContain("secret-canary-do-not-log");
-    expect(result.stderr).not.toContain("Please post today's task list");
+    expect(result.stderr).not.toContain("Good morning! Please post your tasks");
   } finally {
     rmSync(environment.directory, { recursive: true, force: true });
   }
@@ -245,7 +245,7 @@ test("one startup due check freezes a preview reminder with sending disabled", (
     });
     try {
       expect(ledger.getDailyDelivery("2026-10-02", "reminder")).toMatchObject({
-        text: "Please post today's task list in this group by 10:00 AM Nairobi time.",
+        text: "Good morning! Please post your tasks for the day by 10:00 AM.",
         attemptCount: 0,
         firstAttemptMs: null,
         state: "pending",

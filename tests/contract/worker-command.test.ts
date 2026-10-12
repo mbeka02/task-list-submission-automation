@@ -352,6 +352,83 @@ test("the continuous command checks at startup and each configured minute then s
   }
 });
 
+test("a blocked continuous worker exits cleanly on deployment SIGTERM", async () => {
+  const environment = fixture();
+  const child = spawn(
+    process.execPath,
+    [
+      "--import",
+      "tsx",
+      "--import",
+      "./tests/support/worker-clock.ts",
+      "src/worker-command.ts",
+      "run",
+    ],
+    {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        PATH: process.env.PATH,
+        APP_MODE: "preview",
+        ENABLE_OUTBOUND: "false",
+        SQLITE_FILE_PATH: environment.databasePath,
+        HOLIDAY_CALENDAR_PATH: environment.calendarPath,
+        ACTIVATION_DATE: "2026-01-01",
+        LARK_APP_ID: "cli_test",
+        SOURCE_CHAT_ID: "oc_source",
+        MANAGEMENT_CHAT_ID: "oc_management",
+        LARK_APP_SECRET: "synthetic-secret",
+        LARK_READER_OPEN_ID: "ou_operator",
+        LARK_USER_CREDENTIAL_FILE: join(
+          environment.directory,
+          "missing-oauth.json",
+        ),
+        WORKER_TEST_NOW: "2027-01-01T07:01:00.000Z",
+      },
+    },
+  );
+  child.stdout.resume();
+  let stderr = "";
+  child.stderr.on("data", (data: Buffer) => {
+    stderr += data.toString();
+    if (stderr.includes("worker_check_completed"))
+      setTimeout(() => child.kill("SIGTERM"), 50);
+  });
+  try {
+    const code = await new Promise<number | null>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("Worker did not drain"));
+      }, 6000);
+      child.once("error", (error) => {
+        clearTimeout(deadline);
+        reject(error);
+      });
+      child.once("exit", (exitCode) => {
+        clearTimeout(deadline);
+        resolve(exitCode);
+      });
+    });
+    expect(
+      stderr
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event: "worker_check_completed",
+          reportState: "blocked",
+        }),
+      ]),
+    );
+    expect(code).toBe(0);
+  } finally {
+    child.kill("SIGKILL");
+    rmSync(environment.directory, { recursive: true, force: true });
+  }
+});
+
 test("worker status accepts an explicit admin recipient without a group destination or credentials", () => {
   const environment = fixture();
   try {

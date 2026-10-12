@@ -345,6 +345,9 @@ async function main(logger: Logger) {
     process.off("SIGTERM", stop);
     process.off("SIGINT", stop);
     worker.close();
+    // A drained service stop succeeds even if the last job was blocked.
+    // Fatal exceptions still reach the outer command handler and exit non-zero.
+    if (continuous && stopped) process.exitCode = 0;
   }
 }
 

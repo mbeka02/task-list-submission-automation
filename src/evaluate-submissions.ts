@@ -139,10 +139,15 @@ function plainText(
   try {
     let value: unknown = JSON.parse(content);
     if (typeof value !== "object" || value === null) return null;
-    if (type === "text")
-      return "text" in value && typeof value.text === "string"
-        ? value.text
-        : null;
+    if (type === "text") {
+      if (!("text" in value) || typeof value.text !== "string") return null;
+      const text = value.text.trim();
+      // Some pasted text posts carry literal paragraph wrappers; decode only those breaks.
+      // Original content remains evidence, and no HTML is rendered or executed.
+      return /^<p>[\s\S]*<\/p>$/i.test(text)
+        ? text.replace(/<p>/gi, "").replace(/<\/p>/gi, "\n")
+        : value.text;
+    }
     // Without a preferred locale, only a single translation is unambiguous.
     if (!("content" in value)) {
       const localized = Object.entries(value);
@@ -188,6 +193,35 @@ function plainText(
   } catch {
     return null;
   }
+}
+
+/** Inspect daily items before later sections; only recognised headings allow unmarked text. */
+function hasTaskItem(text: string, recognisedHeading: boolean): boolean {
+  const rows = text.split("\n");
+  for (const row of recognisedHeading ? rows.slice(1) : rows) {
+    const line = row.trim();
+    if (recognisedHeading) {
+      if (
+        /^(?:weekly\s+(?:plan|to[ \t]*(?:-[ \t]*)?do(?:\s+list)?|task\s+list)|notes?)\s*[:.]?$/i.test(
+          line,
+        )
+      )
+        return false;
+      if (
+        /^\d{1,2}(?:st|nd|rd|th)?[ \t]+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)(?:[ \t]+\d{4})?[.:]?$/i.test(
+          line,
+        )
+      )
+        continue;
+      if (
+        /^(?:\d{1,2}([/.-])\d{1,2}\1\d{4}|\d{4}-\d{2}-\d{2})[.:]?$/.test(line)
+      )
+        continue;
+    }
+    if (/^(?:\d+[.):]|\(\d+\)|[-*•])[ \t]*\S/.test(line)) return true;
+    if (recognisedHeading && /\p{L}/u.test(line)) return true;
+  }
+  return false;
 }
 
 /**
@@ -333,9 +367,7 @@ function evaluateCurrentObservations(
       ].join(""),
       "iu",
     ).test(normalizedText);
-    const item = /(?:^|\n)[ \t]*(?:\d+[.):]|\(\d+\)|[-*•])[ \t]*\S/.test(
-      normalizedText,
-    );
+    const item = hasTaskItem(normalizedText, heading);
     if (
       candidate &&
       message.rootMessageId &&

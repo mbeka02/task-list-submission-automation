@@ -45,6 +45,71 @@ const task = {
   },
 };
 
+test("plain task lines work in rich posts and retain on-time and late brief labels", async () => {
+  const server = await larkHttpServer(() => ({
+    body: {
+      code: 0,
+      data: {
+        has_more: false,
+        items: [
+          {
+            ...task,
+            create_time: String(Date.parse("2026-10-05T06:36:00Z")),
+            body: {
+              content: JSON.stringify({
+                text: "To-Do List\n\nPrepare drawings.\nReview proposals.",
+              }),
+            },
+          },
+          {
+            ...task,
+            message_id: "om_bob",
+            sender: { ...task.sender, id: "ou_bob", sender_name: "Bob" },
+            msg_type: "post",
+            body: {
+              content: JSON.stringify({
+                title: "Task list",
+                content: [
+                  [{ tag: "text", text: "Review the budget." }],
+                  [{ tag: "text", text: "Prepare a proposal." }],
+                ],
+              }),
+            },
+          },
+        ],
+      },
+    },
+  }));
+  try {
+    const result = await createBriefSubmissionReader({
+      ...config,
+      httpInstance: server.httpInstance,
+    }).readBriefSubmissions({ businessDate });
+    expect(result).toMatchObject({
+      status: "complete",
+      entries: [
+        expect.objectContaining({
+          displayName: "Alice",
+          timeliness: "on_time",
+        }),
+        expect.objectContaining({
+          displayName: "Bob",
+          timeliness: "late",
+          normalizedText: "Task list\nReview the budget.\nPrepare a proposal.",
+        }),
+      ],
+    });
+    expect(
+      evaluateSubmissions({ businessDate, policy, messages: result.messages }),
+    ).toMatchObject({
+      status: "ready",
+      entries: [expect.objectContaining({ displayName: "Alice" })],
+    });
+  } finally {
+    await server.close();
+  }
+});
+
 test("English sender names do not require a single-language post to use an English envelope", async () => {
   const server = await larkHttpServer(() => ({
     body: {
